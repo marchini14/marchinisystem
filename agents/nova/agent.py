@@ -91,30 +91,6 @@ DEFAULT_PROTOCOLS = [
         "notes": "No official token yet; ecosystem activity tracked",
     },
     {
-        "id": "monad",
-        "name": "Monad",
-        "chain": "monad_testnet",
-        "contract": None,
-        "action": "use Monad testnet faucet + testnet dApps",
-        "check_type": "manual",
-        "reward_est": "$1000–10000",
-        "effort": "medium",
-        "status": "testnet",
-        "notes": "High-profile L1 testnet; mainnet launch TBA",
-    },
-    {
-        "id": "movement",
-        "name": "Movement Network",
-        "chain": "movement",
-        "contract": None,
-        "action": "bridge to Movement and use ecosystem",
-        "check_type": "manual",
-        "reward_est": "$500–5000",
-        "effort": "medium",
-        "status": "active",
-        "notes": "Move VM L2; token and airdrop TBA",
-    },
-    {
         "id": "berachain",
         "name": "Berachain",
         "chain": "bera",
@@ -142,13 +118,13 @@ DEFAULT_PROTOCOLS = [
         "id": "eigenlayer",
         "name": "EigenLayer",
         "chain": "ethereum",
-        "contract": "0x858646372CC42E1A627fcE94aa7A7033e7CF075A",
-        "action": "restake ETH or LSTs on EigenLayer",
-        "check_type": "etherscan_tx",
-        "reward_est": "$500–5000",
+        "contract": None,
+        "action": "restake ETH or LSTs on EigenLayer, watch for a new season announcement",
+        "check_type": "manual",
+        "reward_est": "unknown — Season 2 stakedrop claim already closed",
         "effort": "medium",
-        "status": "active",
-        "notes": "EIGEN token live; Season 2 restaking rewards",
+        "status": "uncertain",
+        "notes": "Season 2 claim window closed; no confirmed new season as of 2026-07-20 — check eigenlayer.xyz before spending effort here",
     },
     # ── Solana protocols (checked via Alchemy Solana RPC on WALLET_SOL) ──
     {
@@ -209,7 +185,58 @@ DEFAULT_PROTOCOLS = [
         "reward_est": "$100–1500",
         "effort": "medium",
         "status": "active",
-        "notes": "KMNO token live; points ongoing",
+        "notes": "KMNO token live; confirmed active Season 3 with milestone rewards",
+    },
+    # ── New candidates (2026-07 research) — no confirmed single trackable
+    # contract address, so check_type=manual: Nova lists them as a reminder
+    # but can't auto-verify eligibility yet. Check the site directly.
+    {
+        "id": "polymarket",
+        "name": "Polymarket",
+        "chain": "polygon",
+        "contract": None,
+        "action": "trade on Polymarket prediction markets",
+        "check_type": "manual",
+        "reward_est": "unknown — POLY token confirmed, active points program",
+        "effort": "low",
+        "status": "active",
+        "notes": "Runs on Polygon, not Ethereum mainnet; check polymarket.com/portfolio manually",
+    },
+    {
+        "id": "metamask",
+        "name": "MetaMask",
+        "chain": "ethereum",
+        "contract": None,
+        "action": "use MetaMask swap/portfolio features",
+        "check_type": "manual",
+        "reward_est": "unknown — MASK token confirmed upcoming by Consensys CEO",
+        "effort": "low",
+        "status": "upcoming",
+        "notes": "No single trackable contract; activity is through the wallet UI itself",
+    },
+    {
+        "id": "backpack",
+        "name": "Backpack",
+        "chain": "cex",
+        "contract": None,
+        "action": "deposit/trade on Backpack exchange",
+        "check_type": "manual",
+        "reward_est": "unknown — Season 4 running, TGE announced Feb 2026",
+        "effort": "low",
+        "status": "active",
+        "notes": "Centralized exchange activity, not on-chain — check backpack.exchange account",
+    },
+    {
+        "id": "axiom",
+        "name": "Axiom Trade (Solana)",
+        "chain": "solana",
+        "contract": None,
+        "action": "trade on Axiom Trade terminal",
+        "check_type": "manual",
+        "reward_est": "unknown — active points program",
+        "effort": "medium",
+        "status": "active",
+        "notes": "Needs program-specific activity check, not just generic SOL balance — check axiom.trade/portfolio",
     },
 ]
 
@@ -281,11 +308,19 @@ def get_sol_token_count(wallet):
         return 0
 
 
+
+
 # ── Eligibility checkers ──────────────────────────────────────────────────────
-def get_eth_tx_to(contract_addr, wallet):
-    """Return number of txs from wallet to contract (Etherscan API)."""
+def get_eth_activity(contract_addr, wallet):
+    """Stats for wallet's txs to contract_addr, from one Etherscan txlist call:
+      count      — number of txs to the contract
+      days       — distinct calendar days with a tx (activity streak signal)
+      selectors  — distinct function selectors called (breadth of usage, not
+                   just a single bridge-and-done tx)
+    """
+    empty = {"count": 0, "days": 0, "selectors": 0}
     if not ETHERSCAN_KEY or not wallet:
-        return 0
+        return empty
     url = (
         f"https://api.etherscan.io/v2/api?chainid=1&module=account"
         f"&action=txlist&address={wallet}&startblock=0&endblock=99999999"
@@ -294,12 +329,14 @@ def get_eth_tx_to(contract_addr, wallet):
     try:
         r = http_get(url)
         if r.get("status") != "1":
-            return 0
-        txs = r.get("result", [])
+            return empty
         target = contract_addr.lower()
-        return sum(1 for tx in txs if tx.get("to", "").lower() == target)
+        matched = [tx for tx in r.get("result", []) if tx.get("to", "").lower() == target]
+        days = {time.strftime("%Y-%m-%d", time.gmtime(int(tx["timeStamp"]))) for tx in matched}
+        selectors = {tx["input"][:10] for tx in matched if tx.get("input", "0x") != "0x"}
+        return {"count": len(matched), "days": len(days), "selectors": len(selectors)}
     except Exception:
-        return 0
+        return empty
 
 
 def get_hyperliquid_value(wallet):
@@ -326,9 +363,12 @@ def check_eligibility(proto):
         contract = proto.get("contract")
         if not contract or not WALLET_ETH:
             return False, "wallet or contract unknown"
-        count = get_eth_tx_to(contract, WALLET_ETH)
-        if count > 0:
-            return True, f"{count} tx(s) to bridge contract"
+        stats = get_eth_activity(contract, WALLET_ETH)
+        if stats["count"] > 0:
+            return True, (
+                f"{stats['count']} tx(s) across {stats['days']} distinct day(s), "
+                f"{stats['selectors']} distinct function(s) called"
+            )
         return False, "no interactions found — action needed"
 
     elif ct == "api" and proto["id"] == "hyperliquid":
