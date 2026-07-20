@@ -41,8 +41,21 @@ SCAN_INTERVAL_H = float(os.environ.get("SCAN_INTERVAL_H", "6"))
 PORT            = int(os.environ.get("PORT", "8080"))
 
 DETECTORS = (
-    "reentrancy-eth,reentrancy-no-eth,reentrancy-unlimited-gas,"
-    "protected-vars,unprotected-upgrade,events-access"
+    # High/High
+    "protected-vars,unprotected-upgrade,suicidal,uninitialized-state,"
+    "uninitialized-storage,shadowing-state,arbitrary-send-erc20,"
+    "encode-packed-collision,incorrect-shift,array-by-reference,"
+    # High/Medium
+    "reentrancy-eth,reentrancy-balance,arbitrary-send-eth,"
+    "controlled-delegatecall,unchecked-transfer,weak-prng,"
+    "delegatecall-loop,msg-value-loop,arbitrary-send-erc20-permit,"
+    "controlled-array-length,incorrect-exp,"
+    # Medium/High
+    "incorrect-equality,locked-ether,erc20-interface,erc721-interface,"
+    "mapping-deletion,domain-separator-collision,enum-conversion,"
+    # Medium/Medium
+    "reentrancy-no-eth,tx-origin,unchecked-lowlevel,unchecked-send,"
+    "divide-before-multiply,boolean-cst,constant-function-state"
 )
 
 # ── Shared state ─────────────────────────────────────────────────────────────
@@ -130,8 +143,8 @@ def fetch_immunefi():
             if a.get("type") != "smart_contract":
                 continue
             url = a.get("url", "")
-            if "etherscan.io" not in url:
-                continue
+            if not url.startswith("https://etherscan.io/"):
+                continue  # excludes sepolia./goerli.etherscan.io testnets too
             m = re.search(r"0x[a-fA-F0-9]{40}", url)
             if m:
                 contracts.append(m.group(0))
@@ -215,8 +228,8 @@ def fetch_hackerone():
             if a.get("asset_type") != "SMART_CONTRACT" or not a.get("eligible_for_bounty"):
                 continue
             url = a.get("asset_identifier", "")
-            if "etherscan.io" not in url:
-                continue
+            if not url.startswith("https://etherscan.io/"):
+                continue  # excludes sepolia./goerli.etherscan.io testnets too
             m = re.search(r"0x[a-fA-F0-9]{40}", url)
             if m:
                 contracts.append(m.group(0))
@@ -270,7 +283,7 @@ def run_slither(addr):
             "--json", out_path,
             "--disable-color",
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
         p = Path(out_path)
         if p.exists() and p.stat().st_size > 0:
             return json.loads(p.read_text()), None
@@ -319,6 +332,7 @@ def run_scan():
 
         data, err = run_slither(real_addr)
         if not data or not data.get("success"):
+            print(f"[zero]   slither failed on {real_addr[:10]}…: {(err or 'no output')[:200]}")
             continue
 
         for d in data.get("results", {}).get("detectors", []):
