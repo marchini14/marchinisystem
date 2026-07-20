@@ -18,6 +18,7 @@ Every finding needs manual review before submission. /simulate never signs
 or broadcasts a real transaction — it only asks Alchemy what a transaction
 *would* do, so it is safe to try PoC calldata here before touching a fork.
 """
+import base64
 import json
 import os
 import re
@@ -25,13 +26,16 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-ETHERSCAN_KEY   = os.environ.get("ETHERSCAN_KEY", "")
-ALCHEMY_KEY     = os.environ.get("ALCHEMY_KEY", "")
-ALCHEMY_URL     = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}"
+ETHERSCAN_KEY      = os.environ.get("ETHERSCAN_KEY", "")
+ALCHEMY_KEY        = os.environ.get("ALCHEMY_KEY", "")
+ALCHEMY_URL        = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}"
+HACKERONE_USERNAME = os.environ.get("HACKERONE_USERNAME", "")
+HACKERONE_TOKEN    = os.environ.get("HACKERONE_TOKEN", "")
 SCAN_LIMIT      = int(os.environ.get("SCAN_LIMIT", "30"))
 SCAN_INTERVAL_H = float(os.environ.get("SCAN_INTERVAL_H", "6"))
 PORT            = int(os.environ.get("PORT", "8080"))
@@ -147,6 +151,90 @@ def fetch_immunefi():
     return targets
 
 
+def hackerone_get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    auth = base64.b64encode(f"{HACKERONE_USERNAME}:{HACKERONE_TOKEN}".encode()).decode()
+    req.add_header("Authorization", f"Basic {auth}")
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read())
+
+
+def fetch_hackerone():
+    """HackerOne public program directory.
+
+    Walks every bounty-paying program's structured_scopes looking for
+    asset_type SMART_CONTRACT entries that are eligible_for_bounty and
+    point at an Ethereum mainnet address (etherscan.io, matching
+    etherscan_source/run_slither which are mainnet-only). ~500 programs
+    total, so this takes a few minutes — acceptable inside a 6h cycle.
+    """
+    targets = []
+    if not HACKERONE_USERNAME or not HACKERONE_TOKEN:
+        return targets
+
+    programs, page = [], 1
+    while True:
+        try:
+            d = hackerone_get(
+                f"https://api.hackerone.com/v1/hackers/programs?page[size]=100&page[number]={page}"
+            )
+        except Exception as e:
+            print(f"[zero] hackerone programs page {page} error: {e}")
+            break
+        batch = d.get("data", [])
+        if not batch:
+            break
+        programs.extend(batch)
+        page += 1
+        time.sleep(0.3)
+
+    bounty_programs = [p for p in programs if p["attributes"].get("offers_bounties")]
+    print(f"[zero] hackerone: {len(bounty_programs)} bounty programs, checking scope…")
+
+    for p in bounty_programs:
+        handle = p["attributes"]["handle"]
+        scopes = []
+        for attempt in range(2):
+            try:
+                d = hackerone_get(
+                    f"https://api.hackerone.com/v1/hackers/programs/{handle}/structured_scopes"
+                )
+                scopes = d.get("data", [])
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt == 0:
+                    time.sleep(3)
+                    continue
+                break
+            except Exception:
+                break
+
+        contracts = []
+        for s in scopes:
+            a = s["attributes"]
+            if a.get("asset_type") != "SMART_CONTRACT" or not a.get("eligible_for_bounty"):
+                continue
+            url = a.get("asset_identifier", "")
+            if "etherscan.io" not in url:
+                continue
+            m = re.search(r"0x[a-fA-F0-9]{40}", url)
+            if m:
+                contracts.append(m.group(0))
+
+        if contracts:
+            targets.append({
+                "platform":    "hackerone",
+                "name":        handle,
+                "program_url": f"https://hackerone.com/{handle}",
+                "contracts":   contracts,
+                "max_bounty":  "?",
+            })
+        time.sleep(0.3)
+
+    print(f"[zero] hackerone: {len(targets)} programs with bounty-eligible mainnet contracts")
+    return targets
+
+
 def etherscan_source(addr):
     url = (
         f"https://api.etherscan.io/v2/api?chainid=1&module=contract"
@@ -198,9 +286,9 @@ def run_scan():
     if not ETHERSCAN_KEY:
         return [], 0, 0, "ETHERSCAN_KEY not set"
 
-    all_programs = fetch_immunefi()
+    all_programs = fetch_immunefi() + fetch_hackerone()
     if not all_programs:
-        return [], 0, 0, "immunefi returned no eligible programs"
+        return [], 0, 0, "immunefi/hackerone returned no eligible programs"
 
     # Build flat target list: (addr, program_meta)
     targets = []
