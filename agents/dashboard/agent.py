@@ -29,6 +29,8 @@ PROJECT             = "agency-v3"
 
 STATE = {"html": "<p>warming up…</p>", "last_run": None}
 STATE_LOCK = threading.Lock()
+HISTORY = []          # rolling [{t, zero_pct, nova_eligible}], newest last
+HISTORY_MAX = 60      # ~20h at a 20min refresh — real samples, not synthetic
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -61,7 +63,8 @@ def nf_logs(service, seconds=3600):
 # ── Zero status ───────────────────────────────────────────────────────────────
 def get_zero_status():
     out = {"container": "UNREACHABLE", "created": "", "progress": "?/105",
-           "immunefi": "?", "hackerone": "?", "combined": "?", "findings": [], "done_line": None}
+           "immunefi": "?", "hackerone": "?", "combined": "?", "findings": [], "done_line": None,
+           "raw": []}
     try:
         c = nf_get(f"/projects/{PROJECT}/services/zero-agent/containers")
         running = [x for x in c.get("data", {}).get("containers", []) if x.get("status") == "TASK_RUNNING"]
@@ -88,6 +91,7 @@ def get_zero_status():
         m = re.search(r"Done — .*?\. Next in [\d.]+h\.", log)
         if m:
             out["done_line"] = m.group(0)
+        out["raw"] = [l for l in log.splitlines() if l.strip()][:80]
     except Exception:
         pass
     return out
@@ -96,7 +100,7 @@ def get_zero_status():
 # ── Nova status ───────────────────────────────────────────────────────────────
 def get_nova_status():
     out = {"container": "UNREACHABLE", "created": "", "done_line": None,
-           "eligible": [], "action": [], "manual": []}
+           "eligible": [], "action": [], "manual": [], "raw": []}
     try:
         c = nf_get(f"/projects/{PROJECT}/services/nova-agent/containers")
         running = [x for x in c.get("data", {}).get("containers", []) if x.get("status") == "TASK_RUNNING"]
@@ -126,6 +130,7 @@ def get_nova_status():
             name = cm.group(1)
             if name not in out[bucket]:
                 out[bucket].append(name)
+        out["raw"] = [l for l in lines if l.strip()][:80]
     except Exception:
         pass
     return out
@@ -155,93 +160,148 @@ def get_github_status():
 # ── HTML render ───────────────────────────────────────────────────────────────
 CSS = """
 :root {
-  --bg: #0a0d12; --surface: #12161f; --surface-2: #171c27; --border: #232a38;
-  --text: #e7eaf0; --text-dim: #8a93a6; --text-faint: #5b6272;
-  --accent: #35d0b8; --accent-dim: #1c6e63;
-  --good: #6fdb8f; --good-dim: #234a34; --warn: #f0b94a; --warn-dim: #4a3a1c;
-  --crit: #f2617a; --crit-dim: #4a1f2a; --info: #7c9cf0; --info-dim: #23294a;
+  --bg: #000000; --surface: #0d0d0d; --surface-2: #161616; --border: #272727;
+  --text: #c9cdd6; --text-dim: #8a93a6; --text-faint: #5b6272;
+  --accent: #00d4ff; --accent-dim: #0a3a4a;
+  --good: #00d4ff; --good-dim: #0a3a4a; --warn: #f0b94a; --warn-dim: #4a3a1c;
+  --crit: #ff2149; --crit-dim: #4a1520; --info: #00d4ff; --info-dim: #0a3a4a;
+  --neon-red: #ff2149; --neon-blue: #00d4ff; --gold: #b89a4a;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
   --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 :root[data-theme="light"] {
   --bg: #f3f4f7; --surface: #fff; --surface-2: #eef0f4; --border: #dde1e8;
   --text: #171b24; --text-dim: #565f72; --text-faint: #8891a3;
-  --accent: #0d9488; --accent-dim: #d4f3ee; --good: #16a34a; --good-dim: #dcf5e3;
-  --warn: #b3760a; --warn-dim: #fbedd2; --crit: #d5304a; --crit-dim: #fbdde2;
-  --info: #3457c7; --info-dim: #dfe6fb;
+  --accent: #0090c7; --accent-dim: #d8f0fa; --good: #0090c7; --good-dim: #d8f0fa;
+  --warn: #b3760a; --warn-dim: #fbedd2; --crit: #e2003f; --crit-dim: #fbdde2;
+  --info: #0090c7; --info-dim: #d8f0fa;
+  --neon-red: #e2003f; --neon-blue: #0090c7; --gold: #8a6000;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     --bg: #f3f4f7; --surface: #fff; --surface-2: #eef0f4; --border: #dde1e8;
     --text: #171b24; --text-dim: #565f72; --text-faint: #8891a3;
-    --accent: #0d9488; --accent-dim: #d4f3ee; --good: #16a34a; --good-dim: #dcf5e3;
-    --warn: #b3760a; --warn-dim: #fbedd2; --crit: #d5304a; --crit-dim: #fbdde2;
-    --info: #3457c7; --info-dim: #dfe6fb;
+    --accent: #0090c7; --accent-dim: #d8f0fa; --good: #0090c7; --good-dim: #d8f0fa;
+    --warn: #b3760a; --warn-dim: #fbedd2; --crit: #e2003f; --crit-dim: #fbdde2;
+    --info: #0090c7; --info-dim: #d8f0fa;
+    --neon-red: #e2003f; --neon-blue: #0090c7; --gold: #8a6000;
   }
 }
 * { box-sizing: border-box; }
+html { background: var(--bg); }
 body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans);
-  font-size: 14px; line-height: 1.5; padding: 28px 20px 60px; }
-.wrap { max-width: 1180px; margin: 0 auto; }
+  font-size: 17px; line-height: 1.55; padding: 28px 20px 60px; position: relative; }
+
+/* decorative background — real is-it-a-graph texture, pure CSS, no data behind it */
+.bg-graph { position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: 0.5; }
+:root[data-theme="light"] .bg-graph { opacity: 0.28; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .bg-graph { opacity: 0.28; } }
+.bg-graph path { fill: none; stroke-width: 1.6; stroke-linecap: round; }
+.bg-graph .l1 { stroke: var(--neon-red); stroke-dasharray: 6 10; animation: drift 60s linear infinite; }
+.bg-graph .l2 { stroke: var(--neon-blue); stroke-dasharray: 4 14; animation: drift 90s linear infinite reverse; }
+.bg-graph .l3 { stroke: var(--neon-blue); stroke-dasharray: 3 9; animation: drift 75s linear infinite; opacity: 0.6; }
+@keyframes drift { to { stroke-dashoffset: -1000; } }
+@media (prefers-reduced-motion: reduce) { .bg-graph path { animation: none; } }
+.wrap { max-width: 1220px; margin: 0 auto; position: relative; z-index: 1; }
+
 header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap;
-  gap: 10px 24px; border-bottom: 1px solid var(--border); padding-bottom: 18px; margin-bottom: 24px; }
-h1 { font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: 0.02em; margin: 0; text-wrap: balance; }
+  gap: 10px 24px; border-bottom: 1px solid var(--border); padding-bottom: 18px; margin-bottom: 26px; }
+h1 { font-family: var(--mono); font-size: 26px; font-weight: 700; letter-spacing: 0.02em; margin: 0; text-wrap: balance; color: var(--gold); }
 h1 .dim { color: var(--text-faint); font-weight: 500; }
-.meta { font-family: var(--mono); font-size: 12px; color: var(--text-dim); display: flex; align-items: center; gap: 8px; }
-.pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+.meta { font-family: var(--mono); font-size: 14px; color: var(--text-dim); display: flex; align-items: center; gap: 8px; }
+.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
   animation: pulse 2.2s infinite; flex-shrink: 0; }
 @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
-  70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 22px; }
-.stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
-.stat .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin-bottom: 6px; }
-.stat .value { font-family: var(--mono); font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.stat .sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 22px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px 20px; }
-.agent-name { font-family: var(--mono); font-size: 15px; font-weight: 700; letter-spacing: 0.03em; display: flex; align-items: center; gap: 8px; }
-.pill { font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; padding: 2px 8px; border-radius: 20px; text-transform: uppercase; }
+  70% { box-shadow: 0 0 0 8px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+.stat .label { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin-bottom: 7px; }
+.stat .value { font-family: var(--mono); font-size: 36px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat .sub { font-size: 14px; color: var(--text-dim); margin-top: 3px; }
+.stat svg { display: block; margin-top: 8px; width: 100%; height: 28px; }
+.stat svg polyline { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.stat svg.spark-blue polyline { stroke: var(--neon-blue); }
+.stat svg.spark-red polyline { stroke: var(--neon-red); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px 22px; }
+.agent-name { font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: 0.03em; display: flex; align-items: center; gap: 10px; color: var(--gold); }
+.pill { font-family: var(--mono); font-size: 12.5px; font-weight: 700; letter-spacing: 0.05em; padding: 3px 10px; border-radius: 20px; text-transform: uppercase; }
 .pill.running { background: var(--good-dim); color: var(--good); }
 .pill.down { background: var(--crit-dim); color: var(--crit); }
-.agent-sub { font-size: 12px; color: var(--text-faint); font-family: var(--mono); margin-bottom: 16px; }
-.progress-row { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
-.progress-row b { color: var(--text); font-size: 13px; }
-.progress-track { height: 8px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; margin-bottom: 18px; }
-.progress-fill { height: 100%; border-radius: 5px 0 0 5px; background: linear-gradient(90deg, var(--accent-dim), var(--accent)); }
-.kv-list { display: flex; flex-direction: column; gap: 9px; margin-bottom: 16px; }
-.kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; border-bottom: 1px dashed var(--border); padding-bottom: 9px; }
+.agent-sub { font-size: 14px; color: var(--text-faint); font-family: var(--mono); margin-bottom: 18px; }
+.progress-row { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); font-size: 14px; color: var(--text-dim); margin-bottom: 7px; }
+.progress-row b { color: var(--text); font-size: 16px; }
+.progress-track { height: 10px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; margin-bottom: 20px; }
+.progress-fill { height: 100%; border-radius: 6px 0 0 6px; background: linear-gradient(90deg, var(--accent-dim), var(--accent)); }
+.kv-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
+.kv { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; border-bottom: 1px dashed var(--border); padding-bottom: 10px; }
 .kv:last-child { border-bottom: none; padding-bottom: 0; }
 .kv .k { color: var(--text-dim); }
 .kv .v { font-family: var(--mono); text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
-.note { font-size: 12px; color: var(--text-faint); border-left: 2px solid var(--border); padding-left: 10px; margin-top: 4px; }
-.breakdown-bar { display: flex; height: 20px; border-radius: 6px; overflow: hidden; margin-bottom: 12px; border: 1px solid var(--border); }
+.note { font-size: 14px; color: var(--text-faint); border-left: 2px solid var(--border); padding-left: 11px; margin-top: 4px; }
+.breakdown-bar { display: flex; height: 22px; border-radius: 7px; overflow: hidden; margin-bottom: 14px; border: 1px solid var(--border); }
 .breakdown-bar span { display: block; height: 100%; }
 .bd-eligible { background: var(--good); } .bd-action { background: var(--warn); } .bd-manual { background: var(--surface-2); }
-.legend { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; font-size: 12px; }
-.legend-item { display: flex; align-items: center; gap: 6px; color: var(--text-dim); }
-.swatch { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
-.tag-group { margin-bottom: 12px; }
-.tag-group .tg-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); margin-bottom: 6px; }
-.tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.tag { font-family: var(--mono); font-size: 11px; padding: 3px 8px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim); }
-.section-title { font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin: 0 0 10px 2px; }
-.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 22px; }
-.log-row { display: grid; grid-template-columns: 92px 1fr auto; gap: 14px; align-items: center; padding: 10px 18px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.legend { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 18px; font-size: 14px; }
+.legend-item { display: flex; align-items: center; gap: 7px; color: var(--text-dim); }
+.swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+.tag-group { margin-bottom: 14px; }
+.tag-group .tg-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); margin-bottom: 7px; }
+.tags { display: flex; flex-wrap: wrap; gap: 7px; }
+.tag { font-family: var(--mono); font-size: 13.5px; padding: 4px 10px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim); }
+.section-title { font-family: var(--mono); font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--gold); margin: 0 0 11px 2px; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; margin-bottom: 24px; }
+.log-row { display: grid; grid-template-columns: 100px 1fr auto; gap: 14px; align-items: center; padding: 11px 20px; border-bottom: 1px solid var(--border); font-size: 14.5px; }
 .log-row:last-child { border-bottom: none; }
-.log-sha { font-family: var(--mono); color: var(--text-faint); font-size: 11.5px; }
+.log-sha { font-family: var(--mono); color: var(--text-faint); font-size: 13px; }
 .log-msg { color: var(--text); }
-.chip { font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 5px; text-transform: uppercase; white-space: nowrap; }
+.chip { font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: 0.04em; padding: 3px 8px; border-radius: 5px; text-transform: uppercase; white-space: nowrap; }
 .chip.success { background: var(--good-dim); color: var(--good); }
 .chip.failure { background: var(--crit-dim); color: var(--crit); }
 .chip.running { background: var(--info-dim); color: var(--info); }
 .svc-table { width: 100%; overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); padding: 10px 18px; border-bottom: 1px solid var(--border); font-weight: 600; }
-td { padding: 10px 18px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); padding: 11px 20px; border-bottom: 1px solid var(--border); font-weight: 600; }
+td { padding: 11px 20px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
 tr:last-child td { border-bottom: none; }
-footer { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); text-align: center; padding-top: 10px; }
-@media (max-width: 720px) { .stats { grid-template-columns: repeat(2, 1fr); } .grid2 { grid-template-columns: 1fr; } .log-row { grid-template-columns: 1fr; row-gap: 4px; } }
+footer { font-family: var(--mono); font-size: 13px; color: var(--text-faint); text-align: center; padding-top: 12px; }
+
+/* live log search */
+.search-box { width: 100%; font-family: var(--mono); font-size: 15px; padding: 12px 16px; margin-bottom: 14px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; color: var(--text); }
+.search-box:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.search-box::placeholder { color: var(--text-faint); }
+.live-log { max-height: 420px; overflow-y: auto; font-family: var(--mono); font-size: 13.5px; }
+.ll-row { display: flex; gap: 10px; padding: 7px 18px; border-bottom: 1px solid var(--border); align-items: baseline; }
+.ll-row:last-child { border-bottom: none; }
+.ll-src { flex-shrink: 0; font-weight: 700; letter-spacing: 0.03em; }
+.ll-src.zero { color: var(--info); } .ll-src.nova { color: var(--good); }
+.ll-txt { color: var(--text-dim); overflow-wrap: anywhere; }
+.ll-count { font-family: var(--mono); font-size: 13px; color: var(--text-faint); margin: -6px 0 12px 2px; }
+
+@media (max-width: 720px) {
+  body { font-size: 16px; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .grid2 { grid-template-columns: 1fr; }
+  .log-row { grid-template-columns: 1fr; row-gap: 4px; }
+  .stat .value { font-size: 28px; }
+}
+"""
+
+JS = """
+function llFilter(input) {
+  var q = input.value.toLowerCase();
+  var rows = document.querySelectorAll('.ll-row');
+  var shown = 0;
+  rows.forEach(function(r) {
+    var hit = r.textContent.toLowerCase().indexOf(q) !== -1;
+    r.style.display = hit ? '' : 'none';
+    if (hit) shown++;
+  });
+  var countEl = document.getElementById('ll-count');
+  if (countEl) countEl.textContent = shown + ' / ' + rows.length + ' linija';
+}
 """
 
 
@@ -249,7 +309,41 @@ def esc(s):
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def render_html(zero, nova, commits, runs):
+def sparkline(values, width=100, height=28, pad=2):
+    """SVG polyline points from real sampled history — empty string if <2 samples (no faked data)."""
+    if len(values) < 2:
+        return ""
+    vmin, vmax = min(values), max(values)
+    if vmax == vmin:
+        vmax = vmin + 1
+    step = (width - 2 * pad) / (len(values) - 1)
+    pts = []
+    for i, v in enumerate(values):
+        x = pad + i * step
+        y = height - pad - (v - vmin) / (vmax - vmin) * (height - 2 * pad)
+        pts.append(f"{x:.1f},{y:.1f}")
+    return " ".join(pts)
+
+
+BG_GRAPH_SVG = """<svg class="bg-graph" preserveAspectRatio="none" viewBox="0 0 400 300">
+<path class="l1" d="M0,210 L40,190 L80,225 L120,160 L160,200 L200,130 L240,175 L280,110 L320,150 L360,95 L400,140"/>
+<path class="l2" d="M0,90 L35,120 L75,80 L115,135 L155,100 L195,150 L235,105 L275,145 L315,90 L360,125 L400,85"/>
+<path class="l3" d="M0,260 L45,240 L85,270 L125,235 L165,255 L205,220 L245,250 L285,215 L325,245 L365,205 L400,235"/>
+</svg>"""
+
+
+def build_live_log(zero_raw, nova_raw):
+    rows = [("zero", l) for l in zero_raw] + [("nova", l) for l in nova_raw]
+    if not rows:
+        return '<div class="ll-row"><span class="ll-txt">nema logova jos — cekam prvi refresh ciklus</span></div>', 0
+    html = "".join(
+        f'<div class="ll-row"><span class="ll-src {src}">[{src.upper()}]</span><span class="ll-txt">{esc(line)}</span></div>'
+        for src, line in rows
+    )
+    return html, len(rows)
+
+
+def render_html(zero, nova, commits, runs, history):
     now = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
     cur, total = (zero["progress"].split("/") + ["105"])[:2]
     try:
@@ -286,17 +380,26 @@ def render_html(zero, nova, commits, runs):
             label = r.get("conclusion") or r.get("status") or "?"
             run_rows += f'<div class="log-row"><span class="log-sha">{r.get("head_sha","")[:7]}</span><span class="log-msg">{esc(r.get("name",""))}</span><span class="chip {chip}">{esc(label)}</span></div>'
 
+    zero_spark = sparkline([h["zero_pct"] for h in history])
+    nova_spark = sparkline([h["nova_eligible"] for h in history])
+    zero_spark_svg = f'<svg class="spark-blue" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="{zero_spark}"/></svg>' if zero_spark else ""
+    nova_spark_svg = f'<svg class="spark-red" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="{nova_spark}"/></svg>' if nova_spark else ""
+
+    live_log_html, live_log_count = build_live_log(zero.get("raw", []), nova.get("raw", []))
+
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>Agency V3 — Live Status</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>{CSS}</style></head><body><div class="wrap">
+<style>{CSS}</style></head><body>
+{BG_GRAPH_SVG}
+<div class="wrap">
 <header>
   <h1>AGENCY V3 <span class="dim">/ live status</span></h1>
   <div class="meta"><span class="pulse"></span> auto-refreshing every {REFRESH_INTERVAL_MIN:g} min — server-side, independent of any Claude session · last generated <strong>{now}</strong></div>
 </header>
 <div class="stats">
   <div class="stat"><div class="label">Agents live</div><div class="value">{(1 if zero_pill=='running' else 0)+(1 if nova_pill=='running' else 0)} / 2</div><div class="sub">zero-agent · nova-agent</div></div>
-  <div class="stat"><div class="label">Zero — this cycle</div><div class="value">{esc(zero["progress"])}</div><div class="sub">contracts scanned</div></div>
-  <div class="stat"><div class="label">Nova — last cycle</div><div class="value">{n_e} eligible</div><div class="sub">of {n_total} tracked protocols</div></div>
+  <div class="stat"><div class="label">Zero — this cycle</div><div class="value">{esc(zero["progress"])}</div><div class="sub">contracts scanned</div>{zero_spark_svg}</div>
+  <div class="stat"><div class="label">Nova — last cycle</div><div class="value">{n_e} eligible</div><div class="sub">of {n_total} tracked protocols</div>{nova_spark_svg}</div>
   <div class="stat"><div class="label">Zero findings</div><div class="value">{len(zero["findings"])}</div><div class="sub">this cycle</div></div>
 </div>
 <div class="grid2">
@@ -332,8 +435,14 @@ def render_html(zero, nova, commits, runs):
 <div class="panel">{log_rows}</div>
 <div class="section-title">Recent Actions runs</div>
 <div class="panel">{run_rows or '<div class="log-row"><span class="log-sha">—</span><span class="log-msg">UNREACHABLE</span><span class="chip failure">error</span></div>'}</div>
+<div class="section-title">Live logs — zero-agent + nova-agent (zadnjih {live_log_count} linija)</div>
+<input class="search-box" type="text" placeholder="pretrazi live logove... (npr. contract adresa, ELIGIBLE, error)" oninput="llFilter(this)">
+<div class="ll-count" id="ll-count">{live_log_count} / {live_log_count} linija</div>
+<div class="panel live-log">{live_log_html}</div>
 <footer>generated server-side by dashboard-agent · Northflank + GitHub APIs polled directly</footer>
-</div></body></html>"""
+</div>
+<script>{JS}</script>
+</body></html>"""
 
 
 def refresh_loop():
@@ -342,7 +451,16 @@ def refresh_loop():
             zero = get_zero_status()
             nova = get_nova_status()
             commits, runs = get_github_status()
-            html = render_html(zero, nova, commits, runs)
+
+            cur, total = (zero["progress"].split("/") + ["105"])[:2]
+            try:
+                zero_pct = max(0, min(100, round(int(cur) / int(total) * 100)))
+            except Exception:
+                zero_pct = 0
+            HISTORY.append({"t": time.time(), "zero_pct": zero_pct, "nova_eligible": len(nova["eligible"])})
+            del HISTORY[:-HISTORY_MAX]
+
+            html = render_html(zero, nova, commits, runs, HISTORY)
             with STATE_LOCK:
                 STATE["html"] = html
                 STATE["last_run"] = time.time()
