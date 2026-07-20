@@ -51,7 +51,7 @@ jobs:
           NF_IMAGE: ${{ env.IMAGE }}:latest
         run: |
           HTTP=$(curl -s -o /tmp/nf_resp.json -w "%{http_code}" \
-            -X PUT \
+            -X POST \
             -H "Authorization: Bearer ${NF_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"external\":{\"imagePath\":\"${NF_IMAGE}\"}}" \
