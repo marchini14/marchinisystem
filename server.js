@@ -17,6 +17,13 @@ const MendeleevAgent   = require('./agents/mendeleev');
 
 const PORT = process.env.PORT || 8080;
 const app = express();
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'dashboard/public')));
 
 app.get('/api/summary', async (req, res) => {
