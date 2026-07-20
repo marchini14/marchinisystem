@@ -53,15 +53,16 @@ jobs:
           NF_IMAGE: ${{ env.IMAGE }}:latest
         run: |
           HTTP=$(curl -s -o /tmp/nf_resp.json -w "%{http_code}" \
-            -X POST \
+            -X PUT \
             -H "Authorization: Bearer ${NF_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d "{\"imagePath\":\"${NF_IMAGE}\"}" \
+            -d "{\"external\":{\"imagePath\":\"${NF_IMAGE}\"}}" \
             "https://api.northflank.com/v1/projects/agency-v3/services/zero-agent/deployment")
           cat /tmp/nf_resp.json
           echo ""
           if [ "$HTTP" = "200" ] || [ "$HTTP" = "204" ]; then
             echo "✅ Northflank redeploy triggered (HTTP $HTTP)"
           else
-            echo "⚠️ Northflank returned HTTP $HTTP — service may not exist yet, create it manually"
+            echo "⚠️ Northflank returned HTTP $HTTP"
+            exit 1
           fi
