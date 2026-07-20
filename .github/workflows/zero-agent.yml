@@ -1,0 +1,67 @@
+name: Zero Agent — Build & Deploy
+
+on:
+  push:
+    branches: [claude/todo-implementation-o9w30h, main]
+    paths:
+      - 'agents/zero/**'
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/marchini14/zero-agent
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: agents/zero
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger redeploy on Northflank
+        env:
+          NF_TOKEN: ${{ secrets.NORTHFLANK_TOKEN }}
+          NF_IMAGE: ${{ env.IMAGE }}:latest
+        run: |
+          HTTP=$(curl -s -o /tmp/nf_resp.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${NF_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"imagePath\":\"${NF_IMAGE}\"}" \
+            "https://api.northflank.com/v1/projects/agency-v3/services/zero-agent/deployment")
+          cat /tmp/nf_resp.json
+          echo ""
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "204" ]; then
+            echo "✅ Northflank redeploy triggered (HTTP $HTTP)"
+          else
+            echo "⚠️ Northflank returned HTTP $HTTP — service may not exist yet, create it manually"
+          fi
