@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 ETHERSCAN_KEY    = os.environ.get("ETHERSCAN_KEY", "")
 ALCHEMY_KEY      = os.environ.get("ALCHEMY_KEY", "")
 WALLET_ETH       = os.environ.get("WALLET_ETH", "").lower()
-WALLET_SOL       = os.environ.get("WALLET_SOL", "")
+WALLET_SOL       = [w.strip() for w in os.environ.get("WALLET_SOL", "").split(",") if w.strip()]
 SCAN_INTERVAL_H  = float(os.environ.get("SCAN_INTERVAL_H", "4"))
 PORT             = int(os.environ.get("PORT", "8080"))
 
@@ -340,10 +340,13 @@ def check_eligibility(proto):
     elif ct == "sol_activity":
         if not WALLET_SOL:
             return False, "WALLET_SOL not set — action needed"
-        sol = get_sol_balance(WALLET_SOL)
-        tokens = get_sol_token_count(WALLET_SOL)
-        if sol > 0 or tokens > 0:
-            return True, f"{sol:.4f} SOL, {tokens} SPL token accounts"
+        total_sol = 0.0
+        total_tokens = 0
+        for w in WALLET_SOL:
+            total_sol += get_sol_balance(w)
+            total_tokens += get_sol_token_count(w)
+        if total_sol > 0 or total_tokens > 0:
+            return True, f"{total_sol:.4f} SOL total, {total_tokens} SPL accounts across {len(WALLET_SOL)} wallet(s)"
         return False, "no SOL activity found — action needed (swap/stake on Solana)"
 
     elif ct == "manual":
