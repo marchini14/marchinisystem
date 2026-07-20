@@ -150,6 +150,67 @@ DEFAULT_PROTOCOLS = [
         "status": "active",
         "notes": "EIGEN token live; Season 2 restaking rewards",
     },
+    # ── Solana protocols (checked via Alchemy Solana RPC on WALLET_SOL) ──
+    {
+        "id": "jupiter",
+        "name": "Jupiter (Solana aggregator)",
+        "chain": "solana",
+        "contract": None,
+        "action": "swap through Jupiter aggregator on Solana",
+        "check_type": "sol_activity",
+        "reward_est": "$100–2000",
+        "effort": "low",
+        "status": "active",
+        "notes": "Largest Solana DEX aggregator; JUP distribution ongoing",
+    },
+    {
+        "id": "jito",
+        "name": "Jito (Solana MEV/staking)",
+        "chain": "solana",
+        "contract": None,
+        "action": "stake SOL with Jito (jitoSOL) or run validator",
+        "check_type": "sol_activity",
+        "reward_est": "$200–3000",
+        "effort": "low",
+        "status": "active",
+        "notes": "jitoSOL holders + points program",
+    },
+    {
+        "id": "marinade",
+        "name": "Marinade (Solana liquid staking)",
+        "chain": "solana",
+        "contract": None,
+        "action": "stake SOL with Marinade (mSOL)",
+        "check_type": "sol_activity",
+        "reward_est": "$100–1000",
+        "effort": "low",
+        "status": "active",
+        "notes": "mSOL holders tracked for potential distributions",
+    },
+    {
+        "id": "drift",
+        "name": "Drift (Solana perps)",
+        "chain": "solana",
+        "contract": None,
+        "action": "trade perps or provide liquidity on Drift",
+        "check_type": "sol_activity",
+        "reward_est": "$100–1500",
+        "effort": "medium",
+        "status": "active",
+        "notes": "Drift points program; DRIFT token live",
+    },
+    {
+        "id": "kamino",
+        "name": "Kamino (Solana DeFi)",
+        "chain": "solana",
+        "contract": None,
+        "action": "supply/borrow or LP on Kamino",
+        "check_type": "sol_activity",
+        "reward_est": "$100–1500",
+        "effort": "medium",
+        "status": "active",
+        "notes": "KMNO token live; points ongoing",
+    },
 ]
 
 
@@ -181,6 +242,43 @@ def http_post_json(url, payload):
     )
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read())
+
+
+# ── Alchemy Solana RPC ─────────────────────────────────────────────────────────
+# Read-only: checks SOL balance + SPL token accounts for WALLET_SOL.
+# Uses your Alchemy Solana RPC key. Never signs, never sends funds.
+ALCHEMY_SOL_RPC = "https://solana-mainnet.g.alchemy.com/v2/"
+
+
+def get_sol_balance(wallet):
+    """Return SOL balance (float) of wallet via Alchemy, 0.0 on error."""
+    if not ALCHEMY_KEY or not wallet:
+        return 0.0
+    try:
+        r = http_post_json(
+            ALCHEMY_SOL_RPC + ALCHEMY_KEY,
+            {"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [wallet]},
+        )
+        val = r.get("result", {}).get("value", 0)
+        return float(val) / 1e9
+    except Exception:
+        return 0.0
+
+
+def get_sol_token_count(wallet):
+    """Return number of SPL token accounts held by wallet via Alchemy."""
+    if not ALCHEMY_KEY or not wallet:
+        return 0
+    try:
+        r = http_post_json(
+            ALCHEMY_SOL_RPC + ALCHEMY_KEY,
+            {"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
+             "params": [wallet, {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
+                        {"encoding": "jsonParsed"}]},
+        )
+        return len(r.get("result", {}).get("value", []))
+    except Exception:
+        return 0
 
 
 # ── Eligibility checkers ──────────────────────────────────────────────────────
@@ -238,6 +336,15 @@ def check_eligibility(proto):
         if val > 0:
             return True, f"account value ${val:.2f}"
         return False, "no Hyperliquid account — action needed"
+
+    elif ct == "sol_activity":
+        if not WALLET_SOL:
+            return False, "WALLET_SOL not set — action needed"
+        sol = get_sol_balance(WALLET_SOL)
+        tokens = get_sol_token_count(WALLET_SOL)
+        if sol > 0 or tokens > 0:
+            return True, f"{sol:.4f} SOL, {tokens} SPL token accounts"
+        return False, "no SOL activity found — action needed (swap/stake on Solana)"
 
     elif ct == "manual":
         return None, "manual check required — see notes"
