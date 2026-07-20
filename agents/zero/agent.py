@@ -282,12 +282,17 @@ def run_slither(addr):
             "--detect", DETECTORS,
             "--json", out_path,
             "--disable-color",
+            "--solc-disable-warnings",
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         p = Path(out_path)
         if p.exists() and p.stat().st_size > 0:
-            return json.loads(p.read_text()), None
-        return None, (proc.stderr or "")[-400:]
+            data = json.loads(p.read_text())
+            err_msg = (data.get("error") or "")[:300] if not data.get("success") else None
+            return data, err_msg
+        return None, (proc.stderr or proc.stdout or "no output")[-400:]
+    except subprocess.TimeoutExpired:
+        return None, "timeout after 600s"
     except Exception as e:
         return None, str(e)
     finally:
@@ -331,9 +336,11 @@ def run_scan():
         print(f"[zero] [{scanned}/{SCAN_LIMIT}] {prog['name']} ({prog['platform']}) {real_addr[:10]}…")
 
         data, err = run_slither(real_addr)
-        if not data or not data.get("success"):
+        if not data:
             print(f"[zero]   slither failed on {real_addr[:10]}…: {(err or 'no output')[:200]}")
             continue
+        if not data.get("success"):
+            print(f"[zero]   slither partial on {real_addr[:10]}…: {(err or 'no output')[:150]}")
 
         for d in data.get("results", {}).get("detectors", []):
             lines = sorted({
