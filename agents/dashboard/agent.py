@@ -61,6 +61,12 @@ def nf_logs(service, seconds=3600):
 
 
 # ── Zero status ───────────────────────────────────────────────────────────────
+# Pulls authoritative state from zero-agent's own /report over the internal
+# cluster network (services in the same Northflank project reach each other
+# by short service name) instead of regex-parsing an hour of merged logs.
+# The log window used to span multiple restarts/cycles, so a finding or
+# progress count from an OLD cycle could bleed into the current display —
+# /report always reflects exactly the latest completed (or in-progress) run.
 def get_zero_status():
     out = {"container": "UNREACHABLE", "created": "", "progress": "?/105",
            "immunefi": "?", "hackerone": "?", "combined": "?", "findings": [], "done_line": None,
@@ -74,10 +80,25 @@ def get_zero_status():
     except Exception:
         pass
     try:
+        report = http_get("http://zero-agent:8080/report")
+        scanned = report.get("scanned", 0)
+        out["progress"] = f"{scanned}/105"
+        out["findings"] = [
+            f"[!] {f.get('check')} {f.get('impact')} — {f.get('platform')} / {f.get('program')} — {f.get('address')}"
+            for f in report.get("findings", [])
+        ]
+        if report.get("last_run"):
+            skipped = report.get("skipped_size", 0)
+            out["done_line"] = (
+                f"Done — {report.get('count', 0)} findings from {scanned} contracts "
+                f"({report.get('programs', 0)} programs, {skipped} skipped as too large for 256MB)."
+            )
+    except Exception as e:
+        out["done_line"] = f"error reaching zero-agent/report: {e}"
+    try:
+        # immunefi/hackerone/combined are scope-summary text, not per-cycle
+        # findings — stable across cycles, so log-scraping them is harmless.
         log = nf_logs("zero-agent")
-        m = re.findall(r"\[(\d+)/105\]", log)
-        if m:
-            out["progress"] = f"{m[0]}/105"
         m = re.search(r"immunefi: (\d+) funded[^\n]*", log)
         if m:
             out["immunefi"] = m.group(0).replace("immunefi: ", "")
@@ -87,10 +108,6 @@ def get_zero_status():
         m = re.search(r"(\d+) programs? → (\d+) unique[^\n]*", log)
         if m:
             out["combined"] = f"{m.group(1)} programs → {m.group(2)} addresses"
-        out["findings"] = re.findall(r"\[zero\]\s+\[!\][^\n]*", log)
-        m = re.search(r"Done — .*?\. Next in [\d.]+h\.", log)
-        if m:
-            out["done_line"] = m.group(0)
         out["raw"] = [l for l in log.splitlines() if l.strip()][:80]
     except Exception:
         pass
@@ -98,6 +115,12 @@ def get_zero_status():
 
 
 # ── Nova status ───────────────────────────────────────────────────────────────
+# Same reasoning as get_zero_status: pull the eligible/action/manual badges
+# from nova-agent's own /opportunities (its authoritative current state)
+# instead of pairing "Checking X" / badge lines across a merged, multi-cycle
+# log window — that pairing broke whenever a restart landed mid-cycle,
+# producing impossible combinations (e.g. a manual-only protocol showing
+# ELIGIBLE because an unrelated old badge line ended up adjacent to it).
 def get_nova_status():
     out = {"container": "UNREACHABLE", "created": "", "done_line": None,
            "eligible": [], "action": [], "manual": [], "raw": []}
@@ -110,27 +133,22 @@ def get_nova_status():
     except Exception:
         pass
     try:
+        data = http_get("http://nova-agent:8080/opportunities")
+        bucket_of = {"ELIGIBLE": "eligible", "ACTION_NEEDED": "action", "MANUAL": "manual"}
+        for o in data.get("opportunities", []):
+            bucket = bucket_of.get(o.get("badge"))
+            if bucket:
+                out[bucket].append(o["name"])
+        if data.get("last_run"):
+            out["done_line"] = (
+                f"Done — {len(out['eligible'])} eligible, {len(out['action'])} need action. "
+                f"Last run {time.strftime('%H:%M:%S UTC', time.gmtime(data['last_run']))}."
+            )
+    except Exception as e:
+        out["done_line"] = f"error reaching nova-agent/opportunities: {e}"
+    try:
         log = nf_logs("nova-agent")
-        m = re.search(r"\[nova\] Done — .*", log)
-        if m:
-            out["done_line"] = m.group(0).replace("[nova] ", "")
-        # nf_logs returns newest-first: a badge line's real "Checking NAME"
-        # line is the very NEXT entry in this array (immediately preceding
-        # it in real time). Pair by adjacency, not accumulated state, so a
-        # missing/errored line can't bleed a stale name onto the wrong badge.
-        lines = log.splitlines()
-        for i, line in enumerate(lines):
-            bm = re.search(r"\[nova\]\s+(ELIGIBLE|ACTION_NEEDED|MANUAL):", line)
-            if not bm or i + 1 >= len(lines):
-                continue
-            cm = re.search(r"\[nova\] Checking (.+?)(?:…|\.\.\.)", lines[i + 1])
-            if not cm:
-                continue
-            bucket = {"ELIGIBLE": "eligible", "ACTION_NEEDED": "action", "MANUAL": "manual"}[bm.group(1)]
-            name = cm.group(1)
-            if name not in out[bucket]:
-                out[bucket].append(name)
-        out["raw"] = [l for l in lines if l.strip()][:80]
+        out["raw"] = [l for l in log.splitlines() if l.strip()][:80]
     except Exception:
         pass
     return out
@@ -251,6 +269,7 @@ h1 .dim { color: var(--text-faint); font-weight: 500; }
 .tags { display: flex; flex-wrap: wrap; gap: 7px; }
 .tag { font-family: var(--mono); font-size: 13.5px; padding: 4px 10px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim); }
 .section-title { font-family: var(--mono); font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--gold); margin: 0 0 11px 2px; }
+.log-box-label { font-family: var(--mono); font-size: 12px; color: var(--text-dim); margin: 0 0 6px 2px; }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; margin-bottom: 24px; }
 .log-row { display: grid; grid-template-columns: 100px 1fr auto; gap: 14px; align-items: center; padding: 11px 20px; border-bottom: 1px solid var(--border); font-size: 14.5px; }
 .log-row:last-child { border-bottom: none; }
@@ -332,15 +351,14 @@ BG_GRAPH_SVG = """<svg class="bg-graph" preserveAspectRatio="none" viewBox="0 0 
 </svg>"""
 
 
-def build_live_log(zero_raw, nova_raw):
-    rows = [("zero", l) for l in zero_raw] + [("nova", l) for l in nova_raw]
-    if not rows:
+def build_live_log_box(src, lines):
+    if not lines:
         return '<div class="ll-row"><span class="ll-txt">nema logova jos — cekam prvi refresh ciklus</span></div>', 0
     html = "".join(
         f'<div class="ll-row"><span class="ll-src {src}">[{src.upper()}]</span><span class="ll-txt">{esc(line)}</span></div>'
-        for src, line in rows
+        for line in lines
     )
-    return html, len(rows)
+    return html, len(lines)
 
 
 def render_html(zero, nova, commits, runs, history):
@@ -385,7 +403,9 @@ def render_html(zero, nova, commits, runs, history):
     zero_spark_svg = f'<svg class="spark-blue" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="{zero_spark}"/></svg>' if zero_spark else ""
     nova_spark_svg = f'<svg class="spark-red" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="{nova_spark}"/></svg>' if nova_spark else ""
 
-    live_log_html, live_log_count = build_live_log(zero.get("raw", []), nova.get("raw", []))
+    zero_log_html, zero_log_count = build_live_log_box("zero", zero.get("raw", []))
+    nova_log_html, nova_log_count = build_live_log_box("nova", nova.get("raw", []))
+    live_log_count = zero_log_count + nova_log_count
 
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>Agency V3 — Live Status</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -435,10 +455,19 @@ def render_html(zero, nova, commits, runs, history):
 <div class="panel">{log_rows}</div>
 <div class="section-title">Recent Actions runs</div>
 <div class="panel">{run_rows or '<div class="log-row"><span class="log-sha">—</span><span class="log-msg">UNREACHABLE</span><span class="chip failure">error</span></div>'}</div>
-<div class="section-title">Live logs — zero-agent + nova-agent (zadnjih {live_log_count} linija)</div>
+<div class="section-title">Live logs (zadnjih {live_log_count} linija)</div>
 <input class="search-box" type="text" placeholder="pretrazi live logove... (npr. contract adresa, ELIGIBLE, error)" oninput="llFilter(this)">
 <div class="ll-count" id="ll-count">{live_log_count} / {live_log_count} linija</div>
-<div class="panel live-log">{live_log_html}</div>
+<div class="grid2">
+  <div>
+    <div class="log-box-label">ZERO — {zero_log_count} linija</div>
+    <div class="panel live-log">{zero_log_html}</div>
+  </div>
+  <div>
+    <div class="log-box-label">NOVA — {nova_log_count} linija</div>
+    <div class="panel live-log">{nova_log_html}</div>
+  </div>
+</div>
 <footer>generated server-side by dashboard-agent · Northflank + GitHub APIs polled directly</footer>
 </div>
 <script>{JS}</script>
