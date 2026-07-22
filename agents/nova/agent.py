@@ -22,6 +22,11 @@ WALLET_ETH       = os.environ.get("WALLET_ETH", "").lower()
 WALLET_SOL       = [w.strip() for w in os.environ.get("WALLET_SOL", "").split(",") if w.strip()]
 SCAN_INTERVAL_H  = float(os.environ.get("SCAN_INTERVAL_H", "4"))
 PORT             = int(os.environ.get("PORT", "8080"))
+# How many recent signatures per wallet to pull when checking for protocol
+# interaction (Jupiter/Drift/Kamino have no persistent token to check, so we
+# have to look at tx history instead). Higher = more coverage but more RPC
+# calls per 4h cycle.
+SOL_TX_LOOKBACK  = int(os.environ.get("SOL_TX_LOOKBACK", "100"))
 
 # ── Curated protocol list ────────────────────────────────────────────────────
 # Update NOVA_PROTOCOLS env var with JSON to override at runtime without redeploy.
@@ -132,8 +137,9 @@ DEFAULT_PROTOCOLS = [
         "name": "Jupiter (Solana aggregator)",
         "chain": "solana",
         "contract": None,
+        "program_id": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
         "action": "swap through Jupiter aggregator on Solana",
-        "check_type": "sol_activity",
+        "check_type": "sol_program_interaction",
         "reward_est": "$100–2000",
         "effort": "low",
         "status": "active",
@@ -170,8 +176,9 @@ DEFAULT_PROTOCOLS = [
         "name": "Drift (Solana perps)",
         "chain": "solana",
         "contract": None,
+        "program_id": "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH",
         "action": "trade perps or provide liquidity on Drift",
-        "check_type": "sol_activity",
+        "check_type": "sol_program_interaction",
         "reward_est": "$100–1500",
         "effort": "medium",
         "status": "active",
@@ -182,8 +189,9 @@ DEFAULT_PROTOCOLS = [
         "name": "Kamino (Solana DeFi)",
         "chain": "solana",
         "contract": None,
+        "program_id": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
         "action": "supply/borrow or LP on Kamino",
-        "check_type": "sol_activity",
+        "check_type": "sol_program_interaction",
         "reward_est": "$100–1500",
         "effort": "medium",
         "status": "active",
@@ -337,6 +345,67 @@ def get_sol_mint_balance(wallet, mint):
         return 0.0
 
 
+def get_sol_program_ids(wallet, limit=SOL_TX_LOOKBACK):
+    """Return the set of program IDs invoked (top-level + inner/CPI) across
+    a wallet's most recent `limit` tx signatures via Alchemy.
+
+    Protocols like Jupiter/Drift/Kamino leave no persistent token in the
+    wallet to check (unlike Jito/Marinade's jitoSOL/mSOL) — a swap or a
+    perps trade doesn't leave anything behind. Real evidence of use is a
+    past transaction that invoked that protocol's program, so we pull
+    recent tx history and check which programs actually got called.
+    """
+    if not ALCHEMY_KEY or not wallet:
+        return set()
+    try:
+        sigs_resp = http_post_json(
+            ALCHEMY_SOL_RPC + ALCHEMY_KEY,
+            {"jsonrpc": "2.0", "id": 1, "method": "getSignaturesForAddress",
+             "params": [wallet, {"limit": limit}]},
+        )
+        sigs = [s["signature"] for s in sigs_resp.get("result", []) if s.get("signature")]
+        if not sigs:
+            return set()
+
+        program_ids = set()
+        for i in range(0, len(sigs), 25):
+            chunk = sigs[i:i + 25]
+            batch = [
+                {"jsonrpc": "2.0", "id": j, "method": "getTransaction",
+                 "params": [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]}
+                for j, sig in enumerate(chunk)
+            ]
+            resp = http_post_json(ALCHEMY_SOL_RPC + ALCHEMY_KEY, batch)
+            for item in resp if isinstance(resp, list) else []:
+                tx = (item or {}).get("result")
+                if not tx:
+                    continue
+                for ix in tx.get("transaction", {}).get("message", {}).get("instructions", []):
+                    pid = ix.get("programId")
+                    if pid:
+                        program_ids.add(pid)
+                for inner in tx.get("meta", {}).get("innerInstructions", []) or []:
+                    for ix in inner.get("instructions", []):
+                        pid = ix.get("programId")
+                        if pid:
+                            program_ids.add(pid)
+        return program_ids
+    except Exception:
+        return set()
+
+
+_PROGRAM_ID_CACHE = {}
+
+
+def get_wallet_program_ids(wallet):
+    """Cache get_sol_program_ids per wallet for the duration of one scan
+    cycle — Jupiter/Drift/Kamino would otherwise each re-fetch + re-parse
+    the same tx history for the same wallet. Cleared at the start of
+    run_scan() so each cycle sees fresh history.
+    """
+    if wallet not in _PROGRAM_ID_CACHE:
+        _PROGRAM_ID_CACHE[wallet] = get_sol_program_ids(wallet)
+    return _PROGRAM_ID_CACHE[wallet]
 
 
 # ── Eligibility checkers ──────────────────────────────────────────────────────
@@ -427,6 +496,18 @@ def check_eligibility(proto):
             return True, f"{total:.4f} {proto['name'].split('(')[0].strip()} token held across {len(WALLET_SOL)} wallet(s)"
         return False, f"no {proto['name'].split('(')[0].strip()} token held — action needed (stake to get it)"
 
+    elif ct == "sol_program_interaction":
+        if not WALLET_SOL:
+            return False, "WALLET_SOL not set — action needed"
+        program_id = proto.get("program_id")
+        seen = set()
+        for w in WALLET_SOL:
+            seen |= get_wallet_program_ids(w)
+        name = proto["name"].split("(")[0].strip()
+        if program_id in seen:
+            return True, f"found a tx invoking the {name} program in the last {SOL_TX_LOOKBACK} signatures"
+        return False, f"no {name} program interaction in the last {SOL_TX_LOOKBACK} signatures — action needed"
+
     elif ct == "manual":
         return None, "manual check required — see notes"
 
@@ -434,6 +515,8 @@ def check_eligibility(proto):
 
 
 def run_scan():
+    _PROGRAM_ID_CACHE.clear()
+
     protocols = DEFAULT_PROTOCOLS
     env_override = os.environ.get("NOVA_PROTOCOLS")
     if env_override:
