@@ -39,6 +39,8 @@ HACKERONE_TOKEN    = os.environ.get("HACKERONE_TOKEN", "")
 SCAN_LIMIT      = int(os.environ.get("SCAN_LIMIT", "30"))
 SCAN_INTERVAL_H = float(os.environ.get("SCAN_INTERVAL_H", "6"))
 PORT            = int(os.environ.get("PORT", "8080"))
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 # nf-compute-10 gives this container 256MB RAM. Slither holds the full AST/IR
 # for every compiled file in memory at once, so multi-file DeFi protocols
 # (OZ deps, several inherited contracts) reliably OOM-kill solc rather than
@@ -89,6 +91,22 @@ def http_get(url, headers=None):
     req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read())
+
+
+def notify_telegram(text):
+    """Best-effort push to Telegram. Never raises — a notification failure
+    should not interrupt or crash the scan loop."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        body = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data=body, headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=20)
+    except Exception as e:
+        print(f"[zero] telegram notify failed: {e}")
 
 
 # ── Alchemy helpers ───────────────────────────────────────────────────────────
@@ -418,6 +436,19 @@ def scan_loop():
         print(f"[zero] Done — {len(findings)} findings from {scanned} contracts "
               f"({programs} programs, {skipped_size} skipped as too large for 256MB). "
               f"Next in {SCAN_INTERVAL_H}h.")
+
+        if findings:
+            for f in findings[:5]:
+                notify_telegram(
+                    f"🐛 Zero found something\n"
+                    f"{f['check']} ({f['impact']}/{f['confidence']})\n"
+                    f"{f['program']} ({f['platform']}) — bounty {f['max_bounty']}\n"
+                    f"contract: {f['address']}\n"
+                    f"{f['program_url']}"
+                )
+            if len(findings) > 5:
+                notify_telegram(f"🐛 Zero: +{len(findings) - 5} more findings this cycle — see /report")
+
         time.sleep(SCAN_INTERVAL_H * 3600)
 
 

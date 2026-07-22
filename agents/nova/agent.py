@@ -22,6 +22,8 @@ WALLET_ETH       = os.environ.get("WALLET_ETH", "").lower()
 WALLET_SOL       = [w.strip() for w in os.environ.get("WALLET_SOL", "").split(",") if w.strip()]
 SCAN_INTERVAL_H  = float(os.environ.get("SCAN_INTERVAL_H", "4"))
 PORT             = int(os.environ.get("PORT", "8080"))
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 # How many recent signatures per wallet to pull when checking for protocol
 # interaction (Jupiter/Drift/Kamino have no persistent token to check, so we
 # have to look at tx history instead). Higher = more coverage but more RPC
@@ -281,6 +283,20 @@ def http_post_json(url, payload):
         return json.loads(r.read())
 
 
+def notify_telegram(text):
+    """Best-effort push to Telegram. Never raises — a notification failure
+    should not interrupt or crash the scan loop."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        http_post_json(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            {"chat_id": TELEGRAM_CHAT_ID, "text": text},
+        )
+    except Exception as e:
+        print(f"[nova] telegram notify failed: {e}")
+
+
 # ── Alchemy Solana RPC ─────────────────────────────────────────────────────────
 # Read-only: checks SOL balance + SPL token accounts for WALLET_SOL.
 # Uses your Alchemy Solana RPC key. Never signs, never sends funds.
@@ -395,6 +411,7 @@ def get_sol_program_ids(wallet, limit=SOL_TX_LOOKBACK):
 
 
 _PROGRAM_ID_CACHE = {}
+_PREV_ELIGIBLE = set()
 
 
 def get_wallet_program_ids(wallet):
@@ -558,6 +575,24 @@ def run_scan():
     # Sort: ELIGIBLE first, then ACTION_NEEDED, then MANUAL
     order = {"ELIGIBLE": 0, "ACTION_NEEDED": 1, "MANUAL": 2}
     results.sort(key=lambda r: order.get(r["badge"], 9))
+
+    # Only notify about protocols that just BECAME eligible — otherwise a
+    # static "still eligible" state would re-notify every SCAN_INTERVAL_H
+    # forever. _PREV_ELIGIBLE resets on redeploy, which just risks one
+    # duplicate notification rather than silently missing new ones.
+    global _PREV_ELIGIBLE
+    current_eligible = {r["id"] for r in results if r["badge"] == "ELIGIBLE"}
+    newly_eligible = current_eligible - _PREV_ELIGIBLE
+    for r in results:
+        if r["id"] in newly_eligible:
+            notify_telegram(
+                f"🪂 Nova: newly eligible — {r['name']}\n"
+                f"{r['detail']}\n"
+                f"reward est: {r['reward_est']}\n"
+                f"action: {r['action']}"
+            )
+    _PREV_ELIGIBLE = current_eligible
+
     return results, None
 
 
