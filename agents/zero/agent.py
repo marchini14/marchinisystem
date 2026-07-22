@@ -39,6 +39,15 @@ HACKERONE_TOKEN    = os.environ.get("HACKERONE_TOKEN", "")
 SCAN_LIMIT      = int(os.environ.get("SCAN_LIMIT", "30"))
 SCAN_INTERVAL_H = float(os.environ.get("SCAN_INTERVAL_H", "6"))
 PORT            = int(os.environ.get("PORT", "8080"))
+# nf-compute-10 gives this container 256MB RAM. Slither holds the full AST/IR
+# for every compiled file in memory at once, so multi-file DeFi protocols
+# (OZ deps, several inherited contracts) reliably OOM-kill solc rather than
+# erroring cleanly — that OOM showed up as silent "0 findings", not a crash.
+# Etherscan's combined SourceCode blob size is our only pre-flight signal for
+# compile cost, so contracts above this are skipped instead of burning the
+# 600s timeout on a doomed compile. 150KB is calibrated from real samples:
+# ~38KB compiled fine, ~406KB reliably failed.
+SOURCE_SIZE_LIMIT = int(os.environ.get("SOURCE_SIZE_LIMIT", "150000"))
 
 DETECTORS = (
     # High/High
@@ -60,13 +69,14 @@ DETECTORS = (
 
 # ── Shared state ─────────────────────────────────────────────────────────────
 STATE = {
-    "status":   "starting",
-    "last_run": None,
-    "next_run": None,
-    "findings": [],
-    "scanned":  0,
-    "programs": 0,
-    "error":    None,
+    "status":       "starting",
+    "last_run":     None,
+    "next_run":     None,
+    "findings":     [],
+    "scanned":      0,
+    "programs":     0,
+    "skipped_size": 0,
+    "error":        None,
 }
 STATE_LOCK = threading.Lock()
 
@@ -288,25 +298,36 @@ def run_slither(addr):
         p = Path(out_path)
         if p.exists() and p.stat().st_size > 0:
             data = json.loads(p.read_text())
-            err_msg = (data.get("error") or "")[:300] if not data.get("success") else None
+            err_msg = _tag_error((data.get("error") or "")[-500:]) if not data.get("success") else None
             return data, err_msg
-        return None, (proc.stderr or proc.stdout or "no output")[-400:]
+        return None, _tag_error((proc.stderr or proc.stdout or "no output")[-500:])
     except subprocess.TimeoutExpired:
         return None, "timeout after 600s"
     except Exception as e:
-        return None, str(e)
+        return None, _tag_error(str(e)[-500:])
     finally:
         Path(out_path).unlink(missing_ok=True)
+
+
+def _tag_error(msg):
+    # Error text starts with the (long) solc invocation, so the actual
+    # reason lives at the tail — we already sliced to the tail above. Flag
+    # the common 256MB-OOM signatures explicitly instead of leaving them
+    # buried in a truncated command line.
+    lowered = msg.lower()
+    if any(s in lowered for s in ("killed", "memoryerror", "cannot allocate memory", "oom")):
+        return f"[likely OOM, 256MB limit] {msg}"
+    return msg
 
 
 # ── Main scan ─────────────────────────────────────────────────────────────────
 def run_scan():
     if not ETHERSCAN_KEY:
-        return [], 0, 0, "ETHERSCAN_KEY not set"
+        return [], 0, 0, 0, "ETHERSCAN_KEY not set"
 
     all_programs = fetch_immunefi() + fetch_hackerone()
     if not all_programs:
-        return [], 0, 0, "immunefi/hackerone returned no eligible programs"
+        return [], 0, 0, 0, "immunefi/hackerone returned no eligible programs"
 
     # Build flat target list: (addr, program_meta)
     targets = []
@@ -320,7 +341,7 @@ def run_scan():
 
     print(f"[zero] {len(all_programs)} programs → {len(targets)} unique contract addresses")
 
-    findings, scanned = [], 0
+    findings, scanned, skipped_size = [], 0, 0
     for addr, prog in targets:
         if scanned >= SCAN_LIMIT:
             break
@@ -332,15 +353,21 @@ def run_scan():
             print(f"[zero] {addr[:10]}… not verified, skip")
             continue
         real_addr, src = resolve_impl(addr, src)
+        src_size = len(src.get("SourceCode", ""))
+        if src_size > SOURCE_SIZE_LIMIT:
+            skipped_size += 1
+            print(f"[zero] {real_addr[:10]}… source too large ({src_size} chars > "
+                  f"{SOURCE_SIZE_LIMIT}), would likely OOM on 256MB plan — skip")
+            continue
         scanned += 1
         print(f"[zero] [{scanned}/{SCAN_LIMIT}] {prog['name']} ({prog['platform']}) {real_addr[:10]}…")
 
         data, err = run_slither(real_addr)
         if not data:
-            print(f"[zero]   slither failed on {real_addr[:10]}…: {(err or 'no output')[:200]}")
+            print(f"[zero]   slither failed on {real_addr[:10]}…: {err or 'no output'}")
             continue
         if not data.get("success"):
-            print(f"[zero]   slither partial on {real_addr[:10]}…: {(err or 'no output')[:150]}")
+            print(f"[zero]   slither partial on {real_addr[:10]}…: {err or 'no output'}")
 
         for d in data.get("results", {}).get("detectors", []):
             lines = sorted({
@@ -364,7 +391,7 @@ def run_scan():
             })
             print(f"[zero]   [!] {d.get('check')} {d.get('impact')} — {prog['platform']} / {prog['name']}")
 
-    return findings, scanned, len(all_programs), None
+    return findings, scanned, len(all_programs), skipped_size, None
 
 
 # ── Scan loop ─────────────────────────────────────────────────────────────────
@@ -374,21 +401,23 @@ def scan_loop():
             STATE["status"] = "scanning"
             STATE["error"]  = None
 
-        findings, scanned, programs, err = run_scan()
+        findings, scanned, programs, skipped_size, err = run_scan()
 
         with STATE_LOCK:
             STATE.update({
-                "status":   "idle",
-                "findings": findings,
-                "scanned":  scanned,
-                "programs": programs,
-                "last_run": time.time(),
-                "next_run": time.time() + SCAN_INTERVAL_H * 3600,
-                "error":    err,
+                "status":       "idle",
+                "findings":     findings,
+                "scanned":      scanned,
+                "programs":     programs,
+                "skipped_size": skipped_size,
+                "last_run":     time.time(),
+                "next_run":     time.time() + SCAN_INTERVAL_H * 3600,
+                "error":        err,
             })
 
         print(f"[zero] Done — {len(findings)} findings from {scanned} contracts "
-              f"({programs} programs). Next in {SCAN_INTERVAL_H}h.")
+              f"({programs} programs, {skipped_size} skipped as too large for 256MB). "
+              f"Next in {SCAN_INTERVAL_H}h.")
         time.sleep(SCAN_INTERVAL_H * 3600)
 
 
@@ -400,27 +429,29 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/report"):
             with STATE_LOCK:
                 body = json.dumps({
-                    "status":   STATE["status"],
-                    "last_run": STATE["last_run"],
-                    "next_run": STATE["next_run"],
-                    "scanned":  STATE["scanned"],
-                    "programs": STATE["programs"],
-                    "count":    len(STATE["findings"]),
-                    "findings": STATE["findings"],
+                    "status":       STATE["status"],
+                    "last_run":     STATE["last_run"],
+                    "next_run":     STATE["next_run"],
+                    "scanned":      STATE["scanned"],
+                    "programs":     STATE["programs"],
+                    "skipped_size": STATE["skipped_size"],
+                    "count":        len(STATE["findings"]),
+                    "findings":     STATE["findings"],
                 }, default=str).encode()
             self._send(200, body, "application/json")
         elif self.path.startswith("/status"):
             with STATE_LOCK:
                 body = json.dumps({
-                    "agent":    "zero",
-                    "version":  "2.0.0",
-                    "status":   STATE["status"],
-                    "last_run": STATE["last_run"],
-                    "next_run": STATE["next_run"],
-                    "scanned":  STATE["scanned"],
-                    "programs": STATE["programs"],
-                    "count":    len(STATE["findings"]),
-                    "error":    STATE["error"],
+                    "agent":        "zero",
+                    "version":      "2.0.0",
+                    "status":       STATE["status"],
+                    "last_run":     STATE["last_run"],
+                    "next_run":     STATE["next_run"],
+                    "scanned":      STATE["scanned"],
+                    "programs":     STATE["programs"],
+                    "skipped_size": STATE["skipped_size"],
+                    "count":        len(STATE["findings"]),
+                    "error":        STATE["error"],
                 }, default=str).encode()
             self._send(200, body, "application/json")
         else:
