@@ -9,10 +9,13 @@ HTTP server on :8080
 Background thread checks wallet eligibility every SCAN_INTERVAL_H hours.
 Read-only: never signs transactions, never holds private keys.
 """
+import hashlib
+import hmac
 import json
 import os
 import threading
 import time
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -24,6 +27,11 @@ SCAN_INTERVAL_H  = float(os.environ.get("SCAN_INTERVAL_H", "4"))
 PORT             = int(os.environ.get("PORT", "8080"))
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
+# Read-only: only ever calls GET /api/v3/account (balances). Never places
+# orders, never withdraws — the key must be scoped to "Read" only on MEXC's
+# side, per the no-withdraw / MEXC-only rule.
+MEXC_API_KEY     = os.environ.get("MEXC_API_KEY", "")
+MEXC_API_SECRET  = os.environ.get("MEXC_API_SECRET", "")
 # How many recent signatures per wallet to pull when checking for protocol
 # interaction (Jupiter/Drift/Kamino have no persistent token to check, so we
 # have to look at tx history instead). Higher = more coverage but more RPC
@@ -225,6 +233,18 @@ DEFAULT_PROTOCOLS = [
         "effort": "low",
         "status": "upcoming",
         "notes": "No single trackable contract; activity is through the wallet UI itself",
+    },
+    {
+        "id": "mexc",
+        "name": "MEXC Exchange",
+        "chain": "cex",
+        "contract": None,
+        "action": "deposit/trade on MEXC to qualify for exchange rewards (Launchpool, trading competitions)",
+        "check_type": "mexc_balance",
+        "reward_est": "unknown — MEXC runs recurring Launchpool/trading-competition rewards",
+        "effort": "low",
+        "status": "active",
+        "notes": "Checked via read-only MEXC API key (spot account balances only) — key has no trade/withdraw permission",
     },
     {
         "id": "backpack",
@@ -454,6 +474,37 @@ def get_eth_activity(contract_addr, wallet):
         return empty
 
 
+MEXC_BASE_URL = "https://api.mexc.com"
+
+
+def get_mexc_account():
+    """Return (balances: list[{asset, free, locked}], error: str|None) for
+    the configured MEXC account via a signed, read-only GET /api/v3/account
+    call. Never places orders or withdraws — used purely as an eligibility
+    signal (balance/activity) for airdrop programs that require proof of
+    exchange usage.
+    """
+    if not MEXC_API_KEY or not MEXC_API_SECRET:
+        return [], "MEXC_API_KEY/MEXC_API_SECRET not set"
+    try:
+        params = {"timestamp": int(time.time() * 1000), "recvWindow": 5000}
+        query = urllib.parse.urlencode(params)
+        signature = hmac.new(
+            MEXC_API_SECRET.encode(), query.encode(), hashlib.sha256
+        ).hexdigest()
+        url = f"{MEXC_BASE_URL}/api/v3/account?{query}&signature={signature}"
+        req = urllib.request.Request(url, headers={"X-MEXC-APIKEY": MEXC_API_KEY})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read())
+        balances = [
+            b for b in data.get("balances", [])
+            if float(b.get("free", 0)) > 0 or float(b.get("locked", 0)) > 0
+        ]
+        return balances, None
+    except Exception as e:
+        return [], str(e)
+
+
 def get_hyperliquid_value(wallet):
     """Return account value on Hyperliquid (0 if none)."""
     if not wallet:
@@ -524,6 +575,17 @@ def check_eligibility(proto):
         if program_id in seen:
             return True, f"found a tx invoking the {name} program in the last {SOL_TX_LOOKBACK} signatures"
         return False, f"no {name} program interaction in the last {SOL_TX_LOOKBACK} signatures — action needed"
+
+    elif ct == "mexc_balance":
+        balances, err = get_mexc_account()
+        if err:
+            return False, f"MEXC check failed — {err}"
+        if balances:
+            summary = ", ".join(
+                f"{b['asset']} {float(b['free']) + float(b['locked']):.4f}" for b in balances[:5]
+            )
+            return True, f"{len(balances)} non-zero asset(s): {summary}"
+        return False, "no non-zero MEXC balances found — action needed (deposit/trade)"
 
     elif ct == "manual":
         return None, "manual check required — see notes"
