@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ETHERSCAN_KEY    = os.environ.get("ETHERSCAN_KEY", "")
 ALCHEMY_KEY      = os.environ.get("ALCHEMY_KEY", "")
-WALLET_ETH       = os.environ.get("WALLET_ETH", "").lower()
+WALLET_ETH       = [w.strip().lower() for w in os.environ.get("WALLET_ETH", "").split(",") if w.strip()]
 WALLET_SOL       = [w.strip() for w in os.environ.get("WALLET_SOL", "").split(",") if w.strip()]
 SCAN_INTERVAL_H  = float(os.environ.get("SCAN_INTERVAL_H", "4"))
 PORT             = int(os.environ.get("PORT", "8080"))
@@ -529,18 +529,23 @@ def check_eligibility(proto):
         contract = proto.get("contract")
         if not contract or not WALLET_ETH:
             return False, "wallet or contract unknown"
-        stats = get_eth_activity(contract, WALLET_ETH)
-        if stats["count"] > 0:
+        count = days = selectors = 0
+        for w in WALLET_ETH:
+            stats = get_eth_activity(contract, w)
+            count += stats["count"]
+            days = max(days, stats["days"])
+            selectors = max(selectors, stats["selectors"])
+        if count > 0:
             return True, (
-                f"{stats['count']} tx(s) across {stats['days']} distinct day(s), "
-                f"{stats['selectors']} distinct function(s) called"
+                f"{count} tx(s) across {days} distinct day(s), "
+                f"{selectors} distinct function(s) called, across {len(WALLET_ETH)} wallet(s)"
             )
         return False, "no interactions found — action needed"
 
     elif ct == "api" and proto["id"] == "hyperliquid":
-        val = get_hyperliquid_value(WALLET_ETH)
+        val = sum(get_hyperliquid_value(w) for w in WALLET_ETH)
         if val > 0:
-            return True, f"account value ${val:.2f}"
+            return True, f"account value ${val:.2f} across {len(WALLET_ETH)} wallet(s)"
         return False, "no Hyperliquid account — action needed"
 
     elif ct == "sol_activity":
