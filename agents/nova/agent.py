@@ -144,8 +144,9 @@ DEFAULT_PROTOCOLS = [
         "name": "Jito (Solana MEV/staking)",
         "chain": "solana",
         "contract": None,
+        "mint": "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn",  # jitoSOL
         "action": "stake SOL with Jito (jitoSOL) or run validator",
-        "check_type": "sol_activity",
+        "check_type": "sol_mint_balance",
         "reward_est": "$200–3000",
         "effort": "low",
         "status": "active",
@@ -156,8 +157,9 @@ DEFAULT_PROTOCOLS = [
         "name": "Marinade (Solana liquid staking)",
         "chain": "solana",
         "contract": None,
+        "mint": "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",  # mSOL
         "action": "stake SOL with Marinade (mSOL)",
-        "check_type": "sol_activity",
+        "check_type": "sol_mint_balance",
         "reward_est": "$100–1000",
         "effort": "low",
         "status": "active",
@@ -308,6 +310,33 @@ def get_sol_token_count(wallet):
         return 0
 
 
+def get_sol_mint_balance(wallet, mint):
+    """Return uiAmount balance of a specific SPL mint for wallet via Alchemy, 0.0 on error.
+
+    Unlike get_sol_token_count/get_sol_balance (which only prove the wallet
+    holds *some* SOL/SPL token), this proves the wallet actually holds the
+    protocol's own liquid-staking token — real evidence of using that
+    specific protocol, not just having a funded wallet.
+    """
+    if not ALCHEMY_KEY or not wallet:
+        return 0.0
+    try:
+        r = http_post_json(
+            ALCHEMY_SOL_RPC + ALCHEMY_KEY,
+            {"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
+             "params": [wallet, {"mint": mint}, {"encoding": "jsonParsed"}]},
+        )
+        total = 0.0
+        for acc in r.get("result", {}).get("value", []):
+            info = acc.get("account", {}).get("data", {}).get("parsed", {}).get("info", {})
+            amt = info.get("tokenAmount", {}).get("uiAmount")
+            if amt:
+                total += float(amt)
+        return total
+    except Exception:
+        return 0.0
+
+
 
 
 # ── Eligibility checkers ──────────────────────────────────────────────────────
@@ -388,6 +417,15 @@ def check_eligibility(proto):
         if total_sol > 0 or total_tokens > 0:
             return True, f"{total_sol:.4f} SOL total, {total_tokens} SPL accounts across {len(WALLET_SOL)} wallet(s)"
         return False, "no SOL activity found — action needed (swap/stake on Solana)"
+
+    elif ct == "sol_mint_balance":
+        if not WALLET_SOL:
+            return False, "WALLET_SOL not set — action needed"
+        mint = proto.get("mint")
+        total = sum(get_sol_mint_balance(w, mint) for w in WALLET_SOL)
+        if total > 0:
+            return True, f"{total:.4f} {proto['name'].split('(')[0].strip()} token held across {len(WALLET_SOL)} wallet(s)"
+        return False, f"no {proto['name'].split('(')[0].strip()} token held — action needed (stake to get it)"
 
     elif ct == "manual":
         return None, "manual check required — see notes"
