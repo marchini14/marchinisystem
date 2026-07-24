@@ -78,6 +78,24 @@ rjeđi, veći. Pazite da `GRID_CAPITAL_USDT / GRID_LEVELS` bude iznad
 minimalnog naloga burze (za BTCUSDT ~1 USDT, ali realno neka bude ≥ 10 USDT
 po razini).
 
+## Tržišni kontekst (Fear&Greed, volatilnost)
+
+Bot povlači podatke iz besplatnih javnih izvora (alternative.me, CoinGecko)
+i Bybitovih vlastitih podataka o cijeni — **ne** radi se o prediktoru
+cijene, nego o sigurnosnom filteru i logu:
+
+| Postavka | Zadano | Značenje |
+|---|---|---|
+| `MARKET_INSIGHT` | `true` | loguje Fear&Greed index, BTC dominaciju i volatilnost |
+| `INSIGHT_INTERVAL_MIN` | `60` | koliko često (u minutama) |
+| `DYNAMIC_RANGE` | `false` | ako `true`, širina grida se računa iz stvarne volatilnosti (2-15%) umjesto fiksnog `GRID_RANGE_PCT` |
+| `PAUSE_ON_EXTREME_FEAR` | `false` | ako `true`, bot obustavlja **nove kupnje** kad je Fear&Greed ispod praga (postojeći nalozi i prodaje rade dalje normalno) |
+| `FEAR_GREED_PAUSE_BELOW` | `15` | prag za pauzu (0 = ekstremni strah, 100 = ekstremna pohlepa) |
+
+Ovo su opt-in sigurnosne kočnice, ne "signal za kupnju/prodaju" — nijedan
+sentiment indikator pouzdano ne predviđa cijenu, pa ih bot koristi samo da
+smanji rizik ulaska u loš trenutak, nikad da poveća agresivnost.
+
 ## Rad bota
 
 - Bot mora **stalno raditi** — na kućnom računalu koje ne spava, na malom

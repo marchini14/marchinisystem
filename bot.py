@@ -27,6 +27,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pybit.unified_trading import HTTP
 
+import market_insight
+
 # STATE_DIR: gdje se pisu state.json i bot.log. Zadano je mapa skripte;
 # na Northflanku (ili bilo kojem kontejneru) postavite na trajni volume,
 # inace se stanje gubi pri svakom redeployu dok su nalozi jos otvoreni.
@@ -53,6 +55,11 @@ class Config:
     range_pct: Decimal
     levels: int
     poll_seconds: int
+    market_insight: bool
+    insight_interval_min: int
+    dynamic_range: bool
+    pause_on_extreme_fear: bool
+    fear_greed_pause_below: int
 
     @staticmethod
     def load() -> "Config":
@@ -67,6 +74,11 @@ class Config:
             range_pct=Decimal(os.getenv("GRID_RANGE_PCT", "5")),
             levels=int(os.getenv("GRID_LEVELS", "10")),
             poll_seconds=int(os.getenv("POLL_SECONDS", "15")),
+            market_insight=os.getenv("MARKET_INSIGHT", "true").lower() != "false",
+            insight_interval_min=int(os.getenv("INSIGHT_INTERVAL_MIN", "60")),
+            dynamic_range=os.getenv("DYNAMIC_RANGE", "false").lower() == "true",
+            pause_on_extreme_fear=os.getenv("PAUSE_ON_EXTREME_FEAR", "false").lower() == "true",
+            fear_greed_pause_below=int(os.getenv("FEAR_GREED_PAUSE_BELOW", "15")),
         )
         if not cfg.api_key or not cfg.api_secret or "UPISITE" in cfg.api_key:
             raise SystemExit("Upisite BYBIT_API_KEY i BYBIT_API_SECRET u .env datoteku.")
@@ -89,6 +101,8 @@ class GridBot:
         self._load_instrument_rules()
         self.state = self._load_state()
         self._sim_counter = 0
+        self.paused = False
+        self._last_insight_ts = 0.0
 
     # ------------------------------------------------------------------ setup
 
@@ -129,6 +143,13 @@ class GridBot:
     # ------------------------------------------------------------------ orders
 
     def _place_limit(self, side: str, price: Decimal, qty: Decimal, level: int) -> None:
+        if side == "Buy" and self.paused:
+            log.warning(
+                "Razina %d (BUY) preskocena — trzisni uvjeti su ekstremni (Fear&Greed < %d). "
+                "Nove kupnje su pauzirane dok se sentiment ne popravi.",
+                level, self.cfg.fear_greed_pause_below,
+            )
+            return
         price = self._round_price(price)
         qty = self._round_qty(qty)
         if qty < self.min_order_qty or price * qty < self.min_order_amt:
@@ -171,13 +192,46 @@ class GridBot:
         rows = resp["result"]["list"]
         return bool(rows) and rows[0]["orderStatus"] == "Filled"
 
+    # ------------------------------------------------------------------ insight
+
+    def _check_market_insight(self) -> None:
+        """Loguje trzisni kontekst i (opcionalno) pauzira nove kupnje u ekstremnom strahu."""
+        if not self.cfg.market_insight:
+            return
+        now = time.monotonic()
+        if now - self._last_insight_ts < self.cfg.insight_interval_min * 60:
+            return
+        self._last_insight_ts = now
+        snapshot = market_insight.log_market_snapshot(self.session, self.cfg.symbol)
+
+        if not self.cfg.pause_on_extreme_fear:
+            return
+        fng = snapshot.get("fear_greed")
+        if fng is None:
+            return
+        should_pause = fng["value"] < self.cfg.fear_greed_pause_below
+        if should_pause and not self.paused:
+            log.warning("PAUZA: Fear&Greed %d/100 (%s) je ispod praga %d — nove kupnje se obustavljaju.",
+                        fng["value"], fng["classification"], self.cfg.fear_greed_pause_below)
+        elif not should_pause and self.paused:
+            log.info("Sentiment se oporavio (Fear&Greed %d/100) — nove kupnje su ponovno dopustene.",
+                      fng["value"])
+        self.paused = should_pause
+
     # ------------------------------------------------------------------ grid
 
     def init_grid(self) -> None:
         if self.state["levels"]:
             return
         price = self.last_price()
-        span = price * self.cfg.range_pct / Decimal(100)
+        range_pct = self.cfg.range_pct
+        if self.cfg.dynamic_range:
+            vol = market_insight.realized_volatility_pct(self.session, self.cfg.symbol)
+            if vol is not None:
+                range_pct = max(Decimal("2"), min(vol, Decimal("15")))
+                log.info("DYNAMIC_RANGE: izmjerena volatilnost %s%%, koristim raspon %s%% (umjesto fiksnog %s%%).",
+                          vol, range_pct, self.cfg.range_pct)
+        span = price * range_pct / Decimal(100)
         lower, upper = price - span, price + span
         step = (upper - lower) / Decimal(self.cfg.levels)
         levels = [self._round_price(lower + step * i) for i in range(self.cfg.levels + 1)]
@@ -237,8 +291,10 @@ class GridBot:
         log.info("Grid bot pokrenut — %s, par %s, kapital %s USDT.",
                  mode, self.cfg.symbol, self.cfg.capital)
         self.init_grid()
+        self._check_market_insight()
         while True:
             try:
+                self._check_market_insight()
                 self._check_orders()
             except Exception:
                 log.exception("Greska u petlji — pokusavam ponovno za %d s.", self.cfg.poll_seconds)
