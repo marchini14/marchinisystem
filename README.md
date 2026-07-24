@@ -80,13 +80,50 @@ po razini).
 
 ## Rad bota
 
-- Bot mora **stalno raditi** — na kućnom računalu koje ne spava ili na
-  malom VPS-u (Hetzner/Contabo, ~5 €/mj). S mobitela ne može raditi.
-- Zaustavljanje: `Ctrl+C`. Otvoreni nalozi ostaju na burzi; ponovno
-  pokretanje nastavlja preko `state.json`.
+- Bot mora **stalno raditi** — na kućnom računalu koje ne spava, na malom
+  VPS-u (Hetzner/Contabo, ~5 €/mj), ili na Northflanku (upute ispod). S
+  mobitela izravno ne može raditi (aplikacije se gase u pozadini) — ali
+  preko Northflanka se pokreće i upravlja iz preglednika na mobitelu.
+- Zaustavljanje: `Ctrl+C` (ili "Stop" u Northflanku). Otvoreni nalozi
+  ostaju na burzi; ponovno pokretanje nastavlja preko `state.json`.
 - Za potpuno gašenje: zaustavite bota, obrišite `state.json` i ručno
   otkažite naloge na Bybitu (Orders → Cancel All).
 - Dnevnik rada: `bot.log`, zarada i broj krugova: `state.json`.
+
+## Pokretanje na Northflanku (24/7, upravljanje s mobitela)
+
+Northflank vozi Docker kontejner umjesto vas, pa bot radi neprekidno bez
+da vaš uređaj mora biti uključen. Sve niže ide kroz njihov web dashboard
+(radi i na mobitelu u pregledniku).
+
+1. **Napravite račun** na [northflank.com](https://northflank.com) i
+   povežite svoj GitHub (dat ćete pristup repozitoriju
+   `marchini14/marchinisystem`).
+2. **Create new → Service** → odaberite "Deploy from Git repository" →
+   `marchinisystem`, granu `main` (ili `claude/bol-cvpe3t` dok PR nije
+   spojen). Northflank će prepoznati `Dockerfile` u repou i sam ga
+   izgraditi.
+3. **Tip servisa: "Deployment" (ne "Job")** — mora ostati trajno
+   pokrenut, ne jednokratno izvršavanje.
+4. **Dodajte trajni volume:** Service → Volumes → Add volume → mount
+   path `/app/data`, veličina 1 GB je dovoljna. Ovo čuva `state.json`
+   preko restarta/redeploya — **bez ovoga bot gubi zapis o otvorenim
+   nalozima i može duplicirati pozicije.**
+5. **Postavite environment varijable** (Service → Environment) — isto
+   što i u `.env.example`, ali upisano kao Northflank secrets (ne u
+   kod!): `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `BYBIT_ENV`, `DRY_RUN`,
+   `SYMBOL`, `GRID_CAPITAL_USDT`, `GRID_RANGE_PCT`, `GRID_LEVELS`,
+   `POLL_SECONDS`.
+6. **Deploy.** Logove (isto što i `bot.log`) gledate uživo u Northflank
+   dashboardu pod "Logs" — s mobitela, bilo gdje.
+7. Isti savjet kao i lokalno: krenite s `DRY_RUN=true`, zatim
+   `BYBIT_ENV=demo`, tek onda `live` s malim iznosom.
+
+Napomena: `live`-mod inače traži upis `DA` u terminal prije starta (radi
+sigurnosne potvrde). U Northflanku nema interaktivnog terminala, pa bot
+tamo umjesto toga traži environment varijablu `LIVE_CONFIRM=DA` — bez nje
+odbija krenuti u live modu. Postavite je tek kad ste sigurni u sve ostale
+postavke, i prvo isprobajte na demo računu.
 
 ## Napomena
 

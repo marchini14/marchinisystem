@@ -18,6 +18,7 @@ pokretanje nastavlja tocno gdje je stalo preko state.json).
 import json
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
@@ -26,12 +27,17 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pybit.unified_trading import HTTP
 
-STATE_FILE = Path(__file__).with_name("state.json")
+# STATE_DIR: gdje se pisu state.json i bot.log. Zadano je mapa skripte;
+# na Northflanku (ili bilo kojem kontejneru) postavite na trajni volume,
+# inace se stanje gubi pri svakom redeployu dok su nalozi jos otvoreni.
+STATE_DIR = Path(os.getenv("STATE_DIR", Path(__file__).parent))
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+STATE_FILE = STATE_DIR / "state.json"
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("bot.log", encoding="utf-8")],
+    handlers=[logging.StreamHandler(), logging.FileHandler(STATE_DIR / "bot.log", encoding="utf-8")],
 )
 log = logging.getLogger("gridbot")
 
@@ -243,8 +249,14 @@ def main() -> None:
     cfg = Config.load()
     if cfg.env == "live" and not cfg.dry_run:
         print(f"\nPOZOR: LIVE trgovanje pravim novcem, kapital {cfg.capital} USDT, par {cfg.symbol}.")
-        if input("Upisite 'DA' za nastavak: ").strip().upper() != "DA":
-            raise SystemExit("Prekinuto.")
+        if sys.stdin.isatty():
+            if input("Upisite 'DA' za nastavak: ").strip().upper() != "DA":
+                raise SystemExit("Prekinuto.")
+        elif os.getenv("LIVE_CONFIRM", "").strip().upper() != "DA":
+            raise SystemExit(
+                "Nema terminala za potvrdu (npr. Docker/Northflank). "
+                "Postavite environment varijablu LIVE_CONFIRM=DA da potvrdite live trgovanje."
+            )
     try:
         GridBot(cfg).run()
     except KeyboardInterrupt:
