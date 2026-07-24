@@ -102,7 +102,9 @@ class GridBot:
         self.state = self._load_state()
         self._sim_counter = 0
         self.paused = False
-        self._last_insight_ts = 0.0
+        # -inf garantira da se prvi tržišni snapshot izvrši odmah — referentna
+        # tocka time.monotonic() nije zajamcena kao 0 (moze biti sistemski uptime).
+        self._last_insight_ts = float("-inf")
 
     # ------------------------------------------------------------------ setup
 
@@ -291,7 +293,6 @@ class GridBot:
         log.info("Grid bot pokrenut — %s, par %s, kapital %s USDT.",
                  mode, self.cfg.symbol, self.cfg.capital)
         self.init_grid()
-        self._check_market_insight()
         while True:
             try:
                 self._check_market_insight()
