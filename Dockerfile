@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py check_account.py ./
+COPY bot.py check_account.py market_insight.py ./
 
 # state.json i bot.log se pisu ovdje — u Northflanku ovo mora biti
 # trajni volume, inace se gube pri svakom redeployu/restartu.
