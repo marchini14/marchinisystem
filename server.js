@@ -37,6 +37,12 @@ app.get('/api/results', async (req, res) => {
 const HOT_PAIRS_COUNT = parseInt(process.env.HOT_PAIRS_COUNT || '3', 10);
 const CANDLE_INTERVAL = process.env.CANDLE_INTERVAL || '15m';
 const AGENT_CRON = process.env.AGENT_CRON || (HOT_PAIRS_COUNT > 10 ? '*/15 * * * *' : '*/5 * * * *');
+// Svi agenti na isti cron tick bi inače pucali potpuno paralelno i probili
+// rate-limit i na Bitgetu i na LLM provideru (viđeno uživo: 100 agenata
+// odjednom = masovni "Too Many Requests" i nijedan uspješan ciklus). Umjesto
+// toga procesiramo ih u malim serijama s pauzom između.
+const AGENT_BATCH_SIZE = parseInt(process.env.AGENT_BATCH_SIZE || '5', 10);
+const AGENT_BATCH_DELAY_MS = parseInt(process.env.AGENT_BATCH_DELAY_MS || '2000', 10);
 
 let AGENTS = []; // popunjava se u start() nakon dohvata vrućih parova
 
@@ -52,11 +58,21 @@ async function runAgent(agent) {
   catch (err) { console.error(`[Scheduler] ${agent.name} failed:`, err.message); }
 }
 
-function scheduleAgents() {
-  for (const [agent, schedule] of AGENTS) {
-    cron.schedule(schedule, () => runAgent(agent));
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runAllAgentsThrottled() {
+  for (let i = 0; i < AGENTS.length; i += AGENT_BATCH_SIZE) {
+    const batch = AGENTS.slice(i, i + AGENT_BATCH_SIZE);
+    await Promise.allSettled(batch.map(([agent]) => runAgent(agent)));
+    if (i + AGENT_BATCH_SIZE < AGENTS.length) await sleep(AGENT_BATCH_DELAY_MS);
   }
-  console.log(`[Scheduler] ${AGENTS.length} agenata na rasporedu ${AGENT_CRON}`);
+}
+
+function scheduleAgents() {
+  cron.schedule(AGENT_CRON, () => runAllAgentsThrottled());
+  console.log(`[Scheduler] ${AGENTS.length} agenata na rasporedu ${AGENT_CRON}, serije po ${AGENT_BATCH_SIZE} uz ${AGENT_BATCH_DELAY_MS}ms pauze`);
 }
 
 async function start() {
@@ -83,7 +99,7 @@ async function start() {
 
   // Run each agent once on startup so dashboard isn't empty
   console.log('[Startup] Running all agents once...');
-  await Promise.allSettled(AGENTS.map(([agent]) => runAgent(agent)));
+  await runAllAgentsThrottled();
   console.log('[Startup] Initial run complete');
 
   scheduleAgents();
