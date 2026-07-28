@@ -34,6 +34,16 @@ function roundQty(qty, quantityPrecision) {
   return Math.floor(qty * factor) / factor;
 }
 
+// Bitget rejects trigger prices that aren't an exact multiple of the
+// instrument's price tick size (error 45115: "price should be a multiple of
+// X") — round-to-nearest here, unlike qty's floor (there's no "stay under
+// budget" concern for a price).
+function roundPrice(price, pricePrecision) {
+  const decimals = Number(pricePrecision) || 0;
+  const factor = 10 ** decimals;
+  return Math.round(price * factor) / factor;
+}
+
 async function getTicker(symbol) {
   const res = await getClient().getTickers({ category: CATEGORY, symbol });
   const t = res.data?.[0];
@@ -78,6 +88,8 @@ async function placeMarketOrder({ symbol, side, posSide, qty, stopLossPrice, tak
   if (roundedQty < minQty) {
     throw new Error(`Izračunata količina ${roundedQty} manja je od minOrderQty ${minQty} za ${symbol}`);
   }
+  const roundedStopLoss = stopLossPrice ? roundPrice(stopLossPrice, instrument.pricePrecision) : undefined;
+  const roundedTakeProfit = takeProfitPrice ? roundPrice(takeProfitPrice, instrument.pricePrecision) : undefined;
 
   // marginMode omitted: not a documented place-order parameter (see setLeverage).
   return getClient().submitNewOrder({
@@ -88,10 +100,10 @@ async function placeMarketOrder({ symbol, side, posSide, qty, stopLossPrice, tak
     orderType: 'market',
     qty: String(roundedQty),
     reduceOnly: 'no',
-    stopLoss: stopLossPrice ? String(stopLossPrice) : undefined,
-    takeProfit: takeProfitPrice ? String(takeProfitPrice) : undefined,
-    slOrderType: stopLossPrice ? 'market' : undefined,
-    tpOrderType: takeProfitPrice ? 'market' : undefined,
+    stopLoss: roundedStopLoss !== undefined ? String(roundedStopLoss) : undefined,
+    takeProfit: roundedTakeProfit !== undefined ? String(roundedTakeProfit) : undefined,
+    slOrderType: roundedStopLoss !== undefined ? 'market' : undefined,
+    tpOrderType: roundedTakeProfit !== undefined ? 'market' : undefined,
   });
 }
 
