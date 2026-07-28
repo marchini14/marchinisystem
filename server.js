@@ -39,7 +39,7 @@ const capitalShareUsd = risk.MAX_CAPITAL_USD / SYMBOLS.length;
 // Agent registry: [agent, cron-expression]
 const AGENTS = SYMBOLS.map(({ symbol, interval, name }) => [
   new TradingAgent(name, { symbol, interval, capitalShareUsd, leverage: risk.MAX_LEVERAGE }),
-  '*/15 * * * *', // svakih 15 min
+  '*/5 * * * *', // svakih 5 min
 ]);
 
 app.get('/health', (_, res) => res.json({
