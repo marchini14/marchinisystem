@@ -22,6 +22,13 @@ def compute_stop_target(
     """side is 'long' or 'short'. atr_value must already be a positive, warmed-up ATR reading."""
     if side not in ("long", "short"):
         raise ValueError(f"unsupported side={side!r}")
+    # Config values may arrive as strings (Nautilus/manifest config merging
+    # does not guarantee numeric coercion), so cast defensively rather than
+    # trust the declared type.
+    entry_price = float(entry_price)
+    atr_value = float(atr_value)
+    stop_multiplier = float(stop_multiplier)
+    target_multiplier = float(target_multiplier)
     if atr_value <= 0:
         raise ValueError("atr_value must be positive")
 

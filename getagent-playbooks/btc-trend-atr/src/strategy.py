@@ -22,8 +22,12 @@ class AtrTrendStrategyConfig(StrategyConfig):
     fast_period: int = 12
     slow_period: int = 26
     atr_period: int = 14
-    atr_stop_multiplier: float = 2.0
-    atr_target_multiplier: float = 3.0
+    # Kept as str: manifest.strategy_config declares these quoted (to match
+    # user_config_schema's pattern-validated string tunables), and that value
+    # wins the config merge over backtest.yaml's default here. risk.py casts
+    # to float defensively regardless.
+    atr_stop_multiplier: str = "2.0"
+    atr_target_multiplier: str = "3.0"
 
 
 class AtrTrendStrategy(Strategy):

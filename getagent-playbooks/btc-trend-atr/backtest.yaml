@@ -16,12 +16,8 @@ strategy:
     fast_period: 12
     slow_period: 26
     atr_period: 14
-    atr_stop_multiplier: 2.0
-    atr_target_multiplier: 3.0
-
-execution:
-  start: "2024-01-01T00:00:00Z"
-  end: "2024-07-01T00:00:00Z"
+    atr_stop_multiplier: "2.0"
+    atr_target_multiplier: "3.0"
 
 instrument:
   id: BTCUSDT.BINANCE

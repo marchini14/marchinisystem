@@ -47,21 +47,57 @@ def _symbol(cfg: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _fetch_replay_records(symbol: str, chunks: int = 6) -> list[dict[str, Any]]:
+    """`crypto.futures.kline` caps each request at 1000 bars; chunk backward
+    in time to build a longer replay window than a single call can return.
+    """
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    seen_times: set[int] = set()
+    records: list[dict[str, Any]] = []
+    end_time = now_ms
+    for _ in range(chunks):
+        # closed_only=True (the default, spelled out here) keeps the
+        # currently-forming candle out of the replay frame; a half-formed tail
+        # bar would make the same backtest return different numbers on every run.
+        bars = data.crypto.futures.kline(
+            symbol=symbol,
+            interval=_INTERVAL,
+            limit=1000,
+            end_time=end_time,
+            closed_only=True,
+        )
+        rows = list(data.to_records(bars))
+        if not rows:
+            break
+        for row in rows:
+            ts = row.get("time")
+            if isinstance(ts, (int, float)) and not isinstance(ts, bool) and int(ts) not in seen_times:
+                seen_times.add(int(ts))
+                records.append(row)
+        chunk_min_ts = min(int(row["time"]) for row in rows if isinstance(row.get("time"), (int, float)))
+        # Step the window back before the oldest bar just fetched so the next
+        # chunk doesn't re-request (and re-count) the same range.
+        end_time = chunk_min_ts - _INTERVAL_MS
+    records.sort(key=lambda row: row["time"])
+    return records
+
+
 def _run_historical() -> None:
     cfg = _config()
     symbol = _symbol(cfg)
 
-    # closed_only=True (the default, spelled out here) keeps the
-    # currently-forming candle out of the replay frame; a half-formed tail
-    # bar would make the same backtest return different numbers on every run.
-    bars = data.crypto.futures.kline(
-        symbol=symbol,
-        interval=_INTERVAL,
-        limit=1000,
-        closed_only=True,
-    )
-    replay_frame = backtest.prepare_frame(bars, datetime_index="date")
+    records = _fetch_replay_records(symbol)
+    if not records:
+        runtime.emit_signal(
+            action="watch",
+            symbol=symbol,
+            confidence=0.0,
+            metrics={"rows": 0},
+            meta={"reason": "no historical bars returned"},
+        )
+        return
 
+    replay_frame = backtest.prepare_frame(records, datetime_index="date")
     if replay_frame.empty:
         runtime.emit_signal(
             action="watch",
