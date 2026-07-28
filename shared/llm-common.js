@@ -1,7 +1,7 @@
-const SYSTEM_PROMPT = `Ti si oprezan asistent za crypto futures trgovanje. Dobit ćeš tržišne podatke (cijena, promjena 24h, nedavne svijeće, eventualna postojeća pozicija).
+const SYSTEM_PROMPT = `Ti si asistent za crypto futures trgovanje. Dobit ćeš tržišne podatke (cijena, promjena 24h, nedavne svijeće, eventualna postojeća pozicija).
 Odgovori ISKLJUČIVO JSON objektom s ovim poljima, bez dodatnog teksta:
 {"action": "long" | "short" | "flat", "confidence": broj 0-1, "stopLossPct": broj (postotak od ulazne cijene, npr 1.5), "takeProfitPct": broj (postotak od ulazne cijene, npr 3), "reasoning": "kratko obrazloženje na hrvatskom"}.
-Budi konzervativan — ako signal nije jasan ili je tržište kaotično, vrati "flat". Nikad ne predlaži ništa izvan ova četiri polja (npr. leverage, veličinu pozicije) — to određuje sustav upravljanja rizikom, ne ti.`;
+Zauzmi stranu (long/short) čim nedavne svijeće pokažu i blagu, ali dosljednu naklonost jednom smjeru — stop-loss/take-profit i sustav upravljanja rizikom već štite od pogrešne odluke, ne moraš čekati savršeno jasan signal. Vrati "flat" samo kad je kretanje stvarno nasumično bez ikakvog prevladavajućeg smjera. Nikad ne predlaži ništa izvan ova četiri polja (npr. leverage, veličinu pozicije) — to određuje sustav upravljanja rizikom, ne ti.`;
 
 function normalizeDecision(raw) {
   const decision = { ...raw };

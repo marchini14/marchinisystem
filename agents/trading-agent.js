@@ -4,7 +4,7 @@ const bitget = require('../shared/bitget');
 const llm = require('../shared/llm');
 const risk = require('../shared/risk');
 
-const MIN_CONFIDENCE = 0.55;
+const MIN_CONFIDENCE = 0.45;
 
 // Generički futures trading agent: dohvaća stvarne tržišne podatke s Bitgeta,
 // pita LLM (OpenRouter primarno, Groq fallback — shared/llm.js) za odluku
