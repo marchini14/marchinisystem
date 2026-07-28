@@ -1,0 +1,60 @@
+name: Dashboard Agent — Build & Deploy
+
+on:
+  push:
+    branches: [claude/todo-implementation-o9w30h, main]
+    paths:
+      - 'agents/dashboard/**'
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/marchini14/dashboard-agent
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: agents/dashboard
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Redeploy on Northflank
+        env:
+          NF_TOKEN: ${{ secrets.NORTHFLANK_TOKEN }}
+          NF_IMAGE: ${{ env.IMAGE }}:latest
+        run: |
+          HTTP=$(curl -s -o /tmp/nf_resp.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${NF_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"external\":{\"imagePath\":\"${NF_IMAGE}\"}}" \
+            "https://api.northflank.com/v1/projects/agency-v3/services/dashboard/deployment")
+          cat /tmp/nf_resp.json
+          [ "$HTTP" = "200" ] || [ "$HTTP" = "204" ] && echo "✅ Redeployed" || (echo "❌ HTTP $HTTP" && exit 1)

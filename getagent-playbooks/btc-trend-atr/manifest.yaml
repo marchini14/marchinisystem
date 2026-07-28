@@ -1,0 +1,140 @@
+name: btc-trend-atr
+display_name: "BTC Turtle Breakout (ATR Risk)"
+display_name_i18n:
+  en: "BTC Turtle Breakout (ATR Risk)"
+  zh: "BTC海龟突破策略（ATR风控）"
+  zh-tw: "BTC海龜突破策略（ATR風控）"
+  es: "Ruptura estilo Turtle BTC (riesgo ATR)"
+  ja: "BTCタートル・ブレイクアウト（ATRリスク管理）"
+  vi: "Đột phá kiểu Turtle BTC (rủi ro ATR)"
+version: "1.0.0"
+description: "Donchian breakout BTC perpetual strategy with volatility-scaled stop-loss and take-profit"
+description_i18n:
+  en: "Donchian breakout BTC perpetual strategy with volatility-scaled stop-loss and take-profit"
+  zh: "带波动率自适应止损止盈的BTC永续唐奇安通道突破策略"
+  zh-tw: "帶波動率自適應停損停利的BTC永續唐奇安通道突破策略"
+  es: "Estrategia de ruptura de canal BTC perpetua con stop-loss y take-profit escalados por volatilidad"
+  ja: "ボラティリティ連動のストップロス・テイクプロフィットを備えたBTC無期限チャネル・ブレイクアウト戦略"
+  vi: "Chiến lược đột phá kênh giá BTC vĩnh viễn với stop-loss và take-profit theo biến động"
+long_description: |
+  This Playbook targets Bitcoin perpetual futures and bets that a fresh push to
+  a new local extreme often marks the start of a sustained directional move,
+  rather than a trend that is already exhausted. It follows the classic
+  breakout school of trend-following: rather than reading momentum indicators,
+  it treats a genuine break of the recent trading range itself as the signal
+  that a new regime has begun, and it aims to capture the middle of that move
+  once it is underway.
+
+  The strategy enters long when price pushes to a fresh high beyond its recent
+  trading range, treating that breakout as confirmation that buyers have taken
+  control. It enters short on the mirror-image breakdown below its recent
+  range low. Entries trigger only at the moment the range is actually broken,
+  not on every bar afterward, so the strategy waits for the break to happen
+  rather than anticipating it from indicator readings alone.
+
+  Positions close either when price reverses back through a shorter recent
+  range on the opposite side, or when price moves against the position by a
+  distance tied to how volatile the market currently is, whichever happens
+  first. A separate, wider volatility-scaled level takes profit if price runs
+  strongly in the position's favor before that reversal happens. Because the
+  stop and the take-profit both scale with prevailing volatility rather than a
+  fixed distance, the strategy adjusts its risk tolerance automatically as
+  market conditions calm down or turn turbulent.
+
+  Subscribers can tune leverage, a tunable parameter that amplifies both
+  potential upside and potential drawdown equally without making the strategy
+  more selective about which trades it takes. Margin budget sets the capital
+  this strategy is allowed to risk and is the denominator used for return
+  reporting. Two tunables control how many recent bars define the breakout
+  range used for entries and the shorter range used for exits: widening the
+  entry range demands a bigger move before acting, producing fewer but more
+  selective signals, while widening the exit range gives a winning trend more
+  room to breathe before closing. Two further tunables control how far the
+  protective stop and the profit target sit relative to current volatility.
+
+  This strategy underperforms in choppy, range-bound markets where price
+  repeatedly pokes to a new local extreme without following through, producing
+  a string of false-breakout losses. Sudden volatility expansion around major
+  news events can widen the protective stop enough that a single losing trade
+  costs more than usual before it closes. Persistent funding-rate drag on a
+  held position and slippage during fast markets both erode live returns
+  relative to backtest assumptions. Past backtest performance is not a
+  guarantee of live profitability; only subscribe with capital you can
+  tolerate losing in full, and treat the drawdown risk of a leveraged,
+  unsuitable-regime breakout strategy as real.
+
+market_type: contract
+trading_symbols: ["BTCUSDT"]
+output_kind: trade_strategy
+tags: ["trend", "breakout", "turtle", "donchian", "atr", "risk-managed", "btc", "contract"]
+
+decision_mode: deterministic
+backtest_support: full
+runtime_profile: deterministic
+execution_mode: signal_only
+follow_trade_supported: true
+
+schedule:
+  cron: "0 * * * *"
+  tz: "UTC"
+
+strategy_config:
+  trading_symbols: ["BTCUSDT"]
+  entry_channel_period: 480
+  exit_channel_period: 240
+  atr_period: 14
+  atr_stop_multiplier: "2.0"
+  atr_target_multiplier: "3.0"
+  leverage: 3
+  margin_budget: "100"
+
+user_config_schema:
+  trading_symbols:
+    type: array
+    item_type: string
+    default: ["BTCUSDT"]
+    options: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    aliases:
+      btc: BTCUSDT
+      bitcoin: BTCUSDT
+      eth: ETHUSDT
+      sol: SOLUSDT
+    min_items: 1
+    max_items: 1
+    label: "Trading symbol"
+  leverage:
+    type: integer
+    default: 3
+    min: 1
+    max: 10
+    aliases:
+      3x: 3
+      5x: 5
+    label: "Leverage"
+  margin_budget:
+    type: string
+    default: "100"
+    pattern: "^[0-9]+(\\.[0-9]+)?$"
+    label: "Margin budget USDT"
+  entry_channel_period:
+    type: integer
+    default: 480
+    min: 100
+    max: 800
+    label: "Entry breakout range (bars)"
+  exit_channel_period:
+    type: integer
+    default: 240
+    min: 50
+    max: 400
+    label: "Exit range (bars)"
+  atr_stop_multiplier:
+    type: string
+    default: "2.0"
+    pattern: "^[0-9]+(\\.[0-9]+)?$"
+    label: "Stop-loss volatility multiplier"
+  atr_target_multiplier:
+    type: string
+    default: "3.0"
+    pattern: "^[0-9]+(\\.[0-9]+)?$"
+    label: "Take-profit volatility multiplier"

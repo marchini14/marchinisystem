@@ -1,0 +1,78 @@
+name: Health Check
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Provjeri /health endpoint
+        id: health
+        run: |
+          RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" \
+            --max-time 15 \
+            "https://dash--swarm--r8j5yn6pcjh8.code.run/health")
+
+          echo "http_code=$RESPONSE" >> $GITHUB_OUTPUT
+
+          if [ "$RESPONSE" = "200" ]; then
+            AGENTS=$(cat /tmp/health.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('agents',0))")
+            echo "agents=$AGENTS" >> $GITHUB_OUTPUT
+            echo "status=ok" >> $GITHUB_OUTPUT
+            echo "✅ Swarm je živ — $AGENTS agenata aktivno"
+          else
+            echo "status=down" >> $GITHUB_OUTPUT
+            echo "❌ Swarm ne odgovara (HTTP $RESPONSE)"
+          fi
+
+      - name: Otvori Issue ako je down
+        if: steps.health.outputs.status == 'down'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['swarm-down'],
+              state: 'open'
+            });
+
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '🚨 Agent Swarm je down',
+                body: `## Swarm ne odgovara\n\n**Vrijeme:** ${new Date().toISOString()}\n**HTTP kod:** ${{ steps.health.outputs.http_code }}\n**URL:** https://dash--swarm--r8j5yn6pcjh8.code.run/health\n\nProvjeri Northflank dashboard za logove.`,
+                labels: ['swarm-down']
+              });
+            }
+
+      - name: Zatvori Issue ako je opet up
+        if: steps.health.outputs.status == 'ok'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['swarm-down'],
+              state: 'open'
+            });
+
+            for (const issue of issues.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `✅ Swarm je opet živ — ${{ steps.health.outputs.agents }} agenata aktivno (${new Date().toISOString()})`
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed'
+              });
+            }

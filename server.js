@@ -1,0 +1,178 @@
+const express = require('express');
+const path = require('path');
+const cron = require('node-cron');
+const { redis, getResults, getAgentSummary } = require('./shared/redis');
+const risk = require('./shared/risk');
+const bitget = require('./shared/bitget');
+
+// Agents
+const TradingAgent = require('./agents/trading-agent');
+
+const PORT = process.env.PORT || 8080;
+const app = express();
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  next();
+});
+
+app.use(express.static(path.join(__dirname, 'dashboard/public')));
+
+app.get('/api/summary', async (req, res) => {
+  try { res.json(await getAgentSummary()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/results', async (req, res) => {
+  try { res.json(await getResults(50)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Kill-switch reset je namjerno ručna, ljudska odluka (shared/risk.js) — ovaj
+// endpoint postoji samo da omogući tu odluku izvana (Redis nije dohvatljiv
+// izvan Northflank mreže), zaštićen dijeljenom tajnom da ne bude javno
+// dostupan bilo kome tko pogodi URL.
+app.post('/api/admin/reset-killswitch', express.json(), async (req, res) => {
+  const secret = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!process.env.ADMIN_SECRET || secret !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  await risk.resetKillSwitch();
+  res.json({ ok: true });
+});
+
+// Isti obrazac kao gore — namjerno ručna odluka da se povijest tradeova
+// (Kelly sizing input) obriše kad postane nereprezentativna.
+app.post('/api/admin/clear-trade-history', express.json(), async (req, res) => {
+  const secret = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!process.env.ADMIN_SECRET || secret !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  await risk.clearTradeHistory();
+  res.json({ ok: true });
+});
+
+// Dvoslojno skeniranje: HOT_PAIRS_COUNT parova s najvećim 24h prometom
+// (shared/bitget.js: getHotTickers) se svaki ciklus BESPLATNO provjerava
+// (samo ticker podaci, bez LLM poziva) i rangira po jačini 24h momentuma.
+// LLM (i time stvaran trade) se poziva samo za top LLM_CANDIDATES_COUNT tog
+// popisa — bez ovoga, 70-100 parova na LLM-u odmah probije besplatni dnevni
+// budžet tokena (Groq TPD je po organizaciji, ne po ključu — viđeno uživo:
+// 100k/dan potrošeno za par minuta na 70 istovremenih LLM poziva).
+const HOT_PAIRS_COUNT = parseInt(process.env.HOT_PAIRS_COUNT || '70', 10);
+const LLM_CANDIDATES_COUNT = parseInt(process.env.LLM_CANDIDATES_COUNT || '5', 10);
+// Ranking cijelog HOT_PAIRS_COUNT pool-a po |24h% promjena| bez likvidnosnog
+// filtra zna izvući tanke/egzotične parove (npr. viđeno uživo: QBTSUSDT
+// $751k dnevnog prometa naspram $2.67B za BTC) — na takvom tankom tržištu
+// naš nalog izaziva veći slippage i erratic ponašanje, što je uzrokovalo
+// stvaran veći gubitak. Momentum rangiranje se zato radi samo unutar
+// LIQUID_POOL_SIZE najprometnijih parova (pool je već sortiran po prometu),
+// ne cijelog HOT_PAIRS_COUNT skena.
+const LIQUID_POOL_SIZE = parseInt(process.env.LIQUID_POOL_SIZE || '20', 10);
+const CANDLE_INTERVAL = process.env.CANDLE_INTERVAL || '15m';
+// Default raspored je namjerno rijedak (svaka 2h) — 5 LLM poziva x 12
+// ciklusa/dan = 60 poziva/dan, sigurno ispod 100k TPD budžeta uz razumnu
+// rezervu. Gušći raspored (npr. 15 min) zahtijeva manji LLM_CANDIDATES_COUNT
+// ili plaćeni LLM tier da ne probije dnevni limit.
+const AGENT_CRON = process.env.AGENT_CRON || '0 */2 * * *';
+// Serije s pauzom umjesto svih odjednom — 100 paralelnih poziva je uživo
+// izazvalo masovni "Too Many Requests" i na Bitgetu i na LLM provideru.
+const AGENT_BATCH_SIZE = parseInt(process.env.AGENT_BATCH_SIZE || '3', 10);
+const AGENT_BATCH_DELAY_MS = parseInt(process.env.AGENT_BATCH_DELAY_MS || '3000', 10);
+
+let lastScan = { pool: [], shortlist: [] }; // za /health i dashboard
+
+app.get('/health', (_, res) => res.json({
+  status: 'ok',
+  ts: new Date().toISOString(),
+  scannedPairs: lastScan.pool.length,
+  activePairs: lastScan.shortlist,
+  liveTrading: risk.LIVE_TRADING,
+}));
+
+async function runAgent(agent) {
+  try { await agent.execute(); }
+  catch (err) { console.error(`[Scheduler] ${agent.name} failed:`, err.message); }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runAgentsThrottled(agents) {
+  for (let i = 0; i < agents.length; i += AGENT_BATCH_SIZE) {
+    const batch = agents.slice(i, i + AGENT_BATCH_SIZE);
+    await Promise.allSettled(batch.map((agent) => runAgent(agent)));
+    if (i + AGENT_BATCH_SIZE < agents.length) await sleep(AGENT_BATCH_DELAY_MS);
+  }
+}
+
+// Besplatan pred-filter: rangira cijeli skenirani pool po apsolutnoj 24h
+// promjeni cijene (jačina momentuma) koristeći ticker podatke koje već
+// imamo — bez ijednog dodatnog poziva na burzu ili LLM.
+async function runScanCycle() {
+  // Uskladi stvaran realizirani P&L PRIJE nego agenti donesu nove odluke —
+  // ovo hvata i pozicije zatvorene burzinim SL/TP nalogom (bot inače za njih
+  // ne bi ni znao), pa dnevni loss-limit/kill-switch vidi stvarno stanje.
+  // 6h prozor s dedupom po positionId (shared/risk.js) — siguran preklap.
+  const closedPositions = await bitget.getRecentClosedPositions(Date.now() - 6 * 60 * 60 * 1000);
+  await risk.reconcileClosedPositions(closedPositions);
+
+  const pool = await bitget.getHotTickers(HOT_PAIRS_COUNT); // već sortirano po prometu
+  const liquidPool = pool.slice(0, LIQUID_POOL_SIZE);
+  const shortlist = liquidPool
+    .slice()
+    .sort((a, b) => Math.abs(parseFloat(b.price24hPcnt)) - Math.abs(parseFloat(a.price24hPcnt)))
+    .slice(0, LLM_CANDIDATES_COUNT)
+    .map((t) => t.symbol);
+
+  // Stvarno otvorene pozicije se uvijek moraju nastaviti pratiti (HOLD/CLOSE)
+  // čak i ako njihov par ispadne iz shortliste momentuma — inače bi ostale
+  // "siroče" bez LLM ponovne procjene (SL/TP nalog na burzi i dalje štiti,
+  // ali bot ih više ne bi aktivno upravljao).
+  const openSymbols = await bitget.getOpenPositionSymbols();
+  const activeSymbols = [...new Set([...shortlist, ...openSymbols])];
+
+  lastScan = { pool: pool.map((t) => t.symbol), shortlist, openSymbols };
+  console.log(`[Scan] ${pool.length} parova skenirano, top ${shortlist.length} po momentumu: ${shortlist.join(', ')}${openSymbols.length ? `; + ${openSymbols.length} otvorenih pozicija izvan shortliste: ${openSymbols.filter((s) => !shortlist.includes(s)).join(', ')}` : ''}`);
+
+  const capitalShareUsd = risk.MAX_CAPITAL_USD / shortlist.length;
+  const agents = activeSymbols.map((symbol) => new TradingAgent(`${symbol}-Trader`, {
+    symbol,
+    interval: CANDLE_INTERVAL,
+    capitalShareUsd,
+    leverage: risk.MAX_LEVERAGE,
+  }));
+  await runAgentsThrottled(agents);
+}
+
+async function start() {
+  await redis.ping();
+  console.log('[Redis] ping OK');
+
+  console.log(`[Risk] LIVE_TRADING=${risk.LIVE_TRADING} MAX_CAPITAL_USD=${risk.MAX_CAPITAL_USD} MAX_LEVERAGE=${risk.MAX_LEVERAGE} DAILY_LOSS_LIMIT_PCT=${risk.DAILY_LOSS_LIMIT_PCT}`);
+  if (!risk.LIVE_TRADING) {
+    console.log('[Risk] LIVE_TRADING nije "true" — agenti rade u dry-run modu, ne šalju stvarne naloge.');
+  }
+  if (await risk.isHalted()) {
+    console.log(`[Risk] KILL-SWITCH AKTIVAN: ${await risk.getHaltReason()}`);
+  }
+
+  // Run one scan+decide cycle on startup so dashboard isn't empty
+  console.log('[Startup] Prvi scan+decide ciklus...');
+  await runScanCycle();
+  console.log('[Startup] Initial run complete');
+
+  cron.schedule(AGENT_CRON, () => runScanCycle());
+  console.log(`[Scheduler] Sken ${HOT_PAIRS_COUNT} parova / LLM na top ${LLM_CANDIDATES_COUNT}, raspored ${AGENT_CRON}`);
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Dashboard] http://0.0.0.0:${PORT}`);
+  });
+}
+
+start().catch(err => {
+  console.error('[Fatal]', err.message);
+  process.exit(1);
+});
