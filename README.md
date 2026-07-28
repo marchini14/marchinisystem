@@ -4,8 +4,9 @@
 
 `server.js` pokreće nekoliko trading agenata (`agents/trading-agent.js`) koji
 za BTCUSDT/ETHUSDT/SOLUSDT USDT-FUTURES na Bitgetu dohvaćaju stvarne tržišne
-podatke, pitaju Groq LLM za long/short/flat odluku, i (samo ako je eksplicitno
-uključeno) izvršavaju je preko [`bitget-api`](https://github.com/tiagosiebler/bitget-api)
+podatke, pitaju LLM (`shared/llm.js`: OpenRouter primarno, Groq automatski
+fallback) za long/short/flat odluku, i (samo ako je eksplicitno uključeno)
+izvršavaju je preko [`bitget-api`](https://github.com/tiagosiebler/bitget-api)
 (UTA v3 REST klijent).
 
 **Ovo je jedini dio repozitorija koji dira stvaran novac.** Ostali agenti u
@@ -17,7 +18,9 @@ svjesno drugačija, rizičnija kategorija.
 ### Postavljanje
 
 1. Kopiraj `.env.example` u `.env` i popuni `BITGET_API_KEY/SECRET/PASSPHRASE`
-   (dozvola: Futures Trade, **bez** withdraw) i `GROQ_API_KEY`.
+   (dozvola: Futures Trade, **bez** withdraw) i barem jedan LLM ključ
+   (`OPENROUTER_API_KEY` i/ili `GROQ_API_KEY` — OpenRouter je primaran, Groq
+   je fallback ako je i on postavljen).
 2. Postavi `MAX_CAPITAL_USD`, `MAX_LEVERAGE`, `DAILY_LOSS_LIMIT_PCT` po svom
    apetitu za rizik — ovo su hard capovi, LLM ih ne može zaobići
    (`shared/risk.js`).

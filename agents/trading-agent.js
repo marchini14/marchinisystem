@@ -1,15 +1,15 @@
 const BaseAgent = require('./base');
 const { logResult } = require('../shared/redis');
 const bitget = require('../shared/bitget');
-const groq = require('../shared/groq');
+const llm = require('../shared/llm');
 const risk = require('../shared/risk');
 
 const MIN_CONFIDENCE = 0.55;
 
 // Generički futures trading agent: dohvaća stvarne tržišne podatke s Bitgeta,
-// pita Groq LLM za odluku (long/short/flat) i izvršava je unutar limita iz
-// shared/risk.js. Dok LIVE_TRADING !== 'true' radi samo dry-run — nikad ne
-// šalje stvaran nalog.
+// pita LLM (OpenRouter primarno, Groq fallback — shared/llm.js) za odluku
+// (long/short/flat) i izvršava je unutar limita iz shared/risk.js. Dok
+// LIVE_TRADING !== 'true' radi samo dry-run — nikad ne šalje stvaran nalog.
 class TradingAgent extends BaseAgent {
   constructor(name, { symbol, interval, capitalShareUsd, leverage }) {
     super(name, `Bitget USDT-FUTURES trading — ${symbol} (${interval})`);
@@ -43,7 +43,7 @@ class TradingAgent extends BaseAgent {
     const price = parseFloat(ticker.lastPrice);
     const existingPosition = await bitget.getPosition(this.symbol);
 
-    const decision = await groq.decide(this.symbol, {
+    const decision = await llm.decide(this.symbol, {
       price,
       change24hPct: ticker.price24hPcnt,
       recentCandles: candles,
@@ -111,7 +111,7 @@ class TradingAgent extends BaseAgent {
   async runDryRun() {
     const { ticker, candles } = await this.fetchMarketSnapshot();
     const price = parseFloat(ticker.lastPrice);
-    const decision = await groq.decide(this.symbol, {
+    const decision = await llm.decide(this.symbol, {
       price,
       change24hPct: ticker.price24hPcnt,
       recentCandles: candles,
