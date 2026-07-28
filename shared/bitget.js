@@ -44,6 +44,17 @@ function roundPrice(price, pricePrecision) {
   return Math.round(price * factor) / factor;
 }
 
+// "Vrući" parovi = najveći 24h promet (turnover24h, u USDT) — standardna
+// definicija najlikvidnijih/najaktivnijih parova, ne nagađanje.
+async function getHotSymbols(count) {
+  const res = await getClient().getTickers({ category: CATEGORY });
+  return res.data
+    .filter((t) => t.symbol.endsWith('USDT') && parseFloat(t.turnover24h) > 0)
+    .sort((a, b) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h))
+    .slice(0, count)
+    .map((t) => t.symbol);
+}
+
 async function getTicker(symbol) {
   const res = await getClient().getTickers({ category: CATEGORY, symbol });
   const t = res.data?.[0];
@@ -122,6 +133,7 @@ async function closePosition(symbol, posSide) {
 module.exports = {
   CATEGORY,
   getInstrument,
+  getHotSymbols,
   getTicker,
   getCandles,
   getUsdtEquity,

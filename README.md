@@ -2,12 +2,14 @@
 
 ## Bitget futures trading (agent-swarm)
 
-`server.js` pokreće nekoliko trading agenata (`agents/trading-agent.js`) koji
-za BTCUSDT/ETHUSDT/SOLUSDT USDT-FUTURES na Bitgetu dohvaćaju stvarne tržišne
-podatke, pitaju LLM (`shared/llm.js`: OpenRouter primarno, Groq automatski
-fallback) za long/short/flat odluku, i (samo ako je eksplicitno uključeno)
-izvršavaju je preko [`bitget-api`](https://github.com/tiagosiebler/bitget-api)
-(UTA v3 REST klijent).
+`server.js` pokreće trading agente (`agents/trading-agent.js`) — po jedan za
+svaki od `HOT_PAIRS_COUNT` USDT-FUTURES parova s najvećim 24h prometom
+(svježe dohvaćeno sa burze na svaki start, `shared/bitget.js: getHotSymbols`,
+default 3) — koji dohvaćaju stvarne tržišne podatke, pitaju LLM
+(`shared/llm.js`: OpenRouter primarno, Groq automatski fallback) za
+long/short/flat odluku, i (samo ako je eksplicitno uključeno) izvršavaju je
+preko [`bitget-api`](https://github.com/tiagosiebler/bitget-api) (UTA v3 REST
+klijent).
 
 **Ovo je jedini dio repozitorija koji dira stvaran novac.** Ostali agenti u
 `agents/zero/`, `agents/nova/`, `agents/dashboard/` su namjerno read-only

@@ -3,6 +3,7 @@ const path = require('path');
 const cron = require('node-cron');
 const { redis, getResults, getAgentSummary } = require('./shared/redis');
 const risk = require('./shared/risk');
+const bitget = require('./shared/bitget');
 
 // Agents
 const TradingAgent = require('./agents/trading-agent');
@@ -28,19 +29,16 @@ app.get('/api/results', async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Kapital iz shared/risk.js (MAX_CAPITAL_USD) ravnomjerno podijeljen po agentu.
-const SYMBOLS = [
-  { symbol: 'BTCUSDT', interval: '15m', name: 'Btc-Trader' },
-  { symbol: 'ETHUSDT', interval: '30m', name: 'Eth-Trader' },
-  { symbol: 'SOLUSDT', interval: '1H',  name: 'Sol-Trader' },
-];
-const capitalShareUsd = risk.MAX_CAPITAL_USD / SYMBOLS.length;
+// Broj i raspored parova koje se skenira/trguje — HOT_PAIRS_COUNT parova s
+// najvećim 24h prometom (shared/bitget.js: getHotSymbols), svježe dohvaćeno
+// na svaki start servisa (ne fiksni popis). Veći broj parova nužno znači
+// manji MAX_CAPITAL_USD po paru i mora ići na rjeđi raspored da LLM pozivi
+// ne probiju besplatne dnevne limite (OpenRouter/Groq).
+const HOT_PAIRS_COUNT = parseInt(process.env.HOT_PAIRS_COUNT || '3', 10);
+const CANDLE_INTERVAL = process.env.CANDLE_INTERVAL || '15m';
+const AGENT_CRON = process.env.AGENT_CRON || (HOT_PAIRS_COUNT > 10 ? '*/15 * * * *' : '*/5 * * * *');
 
-// Agent registry: [agent, cron-expression]
-const AGENTS = SYMBOLS.map(({ symbol, interval, name }) => [
-  new TradingAgent(name, { symbol, interval, capitalShareUsd, leverage: risk.MAX_LEVERAGE }),
-  '*/5 * * * *', // svakih 5 min
-]);
+let AGENTS = []; // popunjava se u start() nakon dohvata vrućih parova
 
 app.get('/health', (_, res) => res.json({
   status: 'ok',
@@ -57,9 +55,8 @@ async function runAgent(agent) {
 function scheduleAgents() {
   for (const [agent, schedule] of AGENTS) {
     cron.schedule(schedule, () => runAgent(agent));
-    console.log(`[Scheduler] ${agent.name.padEnd(15)} → ${schedule}`);
   }
-  console.log(`[Scheduler] ${AGENTS.length} agents scheduled`);
+  console.log(`[Scheduler] ${AGENTS.length} agenata na rasporedu ${AGENT_CRON}`);
 }
 
 async function start() {
@@ -73,6 +70,16 @@ async function start() {
   if (await risk.isHalted()) {
     console.log(`[Risk] KILL-SWITCH AKTIVAN: ${await risk.getHaltReason()}`);
   }
+
+  console.log(`[Startup] Dohvaćam ${HOT_PAIRS_COUNT} najprometnijih USDT-FUTURES parova...`);
+  const symbols = await bitget.getHotSymbols(HOT_PAIRS_COUNT);
+  console.log(`[Startup] Parovi: ${symbols.join(', ')}`);
+
+  const capitalShareUsd = risk.MAX_CAPITAL_USD / symbols.length;
+  AGENTS = symbols.map((symbol) => [
+    new TradingAgent(`${symbol}-Trader`, { symbol, interval: CANDLE_INTERVAL, capitalShareUsd, leverage: risk.MAX_LEVERAGE }),
+    AGENT_CRON,
+  ]);
 
   // Run each agent once on startup so dashboard isn't empty
   console.log('[Startup] Running all agents once...');
