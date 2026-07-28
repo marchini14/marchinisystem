@@ -45,14 +45,14 @@ function roundPrice(price, pricePrecision) {
 }
 
 // "Vrući" parovi = najveći 24h promet (turnover24h, u USDT) — standardna
-// definicija najlikvidnijih/najaktivnijih parova, ne nagađanje.
-async function getHotSymbols(count) {
-  const res = await getClient().getTickers({ category: CATEGORY });
-  return res.data
+// definicija najlikvidnijih/najaktivnijih parova, ne nagađanje. Vraća pune
+// ticker objekte (ne samo imena) da se isti dohvat može iskoristiti i za
+// jeftin tehnički pre-filter (server.js) bez dodatnih poziva na burzu.
+async function getHotTickers(count) {
+  return (await getClient().getTickers({ category: CATEGORY })).data
     .filter((t) => t.symbol.endsWith('USDT') && parseFloat(t.turnover24h) > 0)
     .sort((a, b) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h))
-    .slice(0, count)
-    .map((t) => t.symbol);
+    .slice(0, count);
 }
 
 async function getTicker(symbol) {
@@ -133,7 +133,7 @@ async function closePosition(symbol, posSide) {
 module.exports = {
   CATEGORY,
   getInstrument,
-  getHotSymbols,
+  getHotTickers,
   getTicker,
   getCandles,
   getUsdtEquity,
