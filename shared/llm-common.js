@@ -36,7 +36,9 @@ async function chatDecision({ url, apiKey, model, symbol, marketData, extraHeade
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`${url} greška ${res.status}: ${text}`);
+    const err = new Error(`${url} greška ${res.status}: ${text}`);
+    err.status = res.status;
+    throw err;
   }
 
   const data = await res.json();
