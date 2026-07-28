@@ -9,7 +9,7 @@ from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.trading.strategy import Strategy
 
-from .indicators import StreamingAtr, StreamingEma
+from .indicators import StreamingAtr, StreamingDonchian
 from .risk import compute_stop_target, stop_breached, target_breached
 
 
@@ -19,8 +19,8 @@ class AtrTrendStrategyConfig(StrategyConfig):
     instrument_ids: tuple[InstrumentId, ...] = ()
     bar_types: tuple[BarType, ...] = ()
     trade_size: str = "0.01"
-    fast_period: int = 12
-    slow_period: int = 26
+    entry_channel_period: int = 480
+    exit_channel_period: int = 240
     atr_period: int = 14
     # Kept as str: manifest.strategy_config declares these quoted (to match
     # user_config_schema's pattern-validated string tunables), and that value
@@ -31,18 +31,20 @@ class AtrTrendStrategyConfig(StrategyConfig):
 
 
 class AtrTrendStrategy(Strategy):
-    """EMA crossover entry (same signal as Bitget's own btc-ema-cross-demo),
-    but exits are gated by an ATR-derived stop/target in addition to the
-    inverse crossover, instead of only exiting on the next cross.
+    """Donchian channel breakout entry (classic "Turtle" trend-following
+    logic — enter on a fresh N-bar high/low breakout, exit on the opposite
+    M-bar channel where M < N), with an ATR-derived stop/target checked every
+    bar ahead of the channel exit. Turtle's original stop is itself ~2xATR,
+    so this pairs the same risk sizing with the breakout entry/exit instead
+    of an EMA crossover.
     """
 
     def __init__(self, config: AtrTrendStrategyConfig) -> None:
         super().__init__(config)
         self.cfg = config
-        self._fast_ema = StreamingEma(config.fast_period)
-        self._slow_ema = StreamingEma(config.slow_period)
+        self._entry_channel = StreamingDonchian(config.entry_channel_period)
+        self._exit_channel = StreamingDonchian(config.exit_channel_period)
         self._atr = StreamingAtr(config.atr_period)
-        self._prev_diff: Optional[float] = None
         self._bar_count = 0
         self._position_side: Optional[str] = None
         self._stop_price: Optional[float] = None
@@ -66,15 +68,19 @@ class AtrTrendStrategy(Strategy):
         self._bar_count += 1
 
         atr_value = self._atr.update(high, low, close)
-        fast = self._fast_ema.update(close)
-        slow = self._slow_ema.update(close)
+        # Read channels BEFORE updating them with this bar, so the breakout
+        # test never compares this bar's own high/low against itself.
+        entry_upper, entry_lower = self._entry_channel.channel()
+        exit_upper, exit_lower = self._exit_channel.channel()
+        self._entry_channel.update(high, low)
+        self._exit_channel.update(high, low)
 
         instrument = self._instrument
         if instrument is None:
             return
 
         # Risk exit takes priority over signal exit: a stop/target breach
-        # intrabar closes the position before we even look at the crossover.
+        # intrabar closes the position before we even look at the channels.
         if self._position_side is not None:
             if self._stop_price is not None and stop_breached(
                 self._position_side, self._stop_price, low, high
@@ -89,33 +95,22 @@ class AtrTrendStrategy(Strategy):
                 self._reset_position()
                 return
 
-        warmup = max(self.cfg.slow_period, self.cfg.fast_period, self.cfg.atr_period) + 1
-        if self._bar_count < warmup or atr_value is None:
-            self._prev_diff = fast - slow
+        if atr_value is None or entry_upper is None or exit_upper is None:
             return
-
-        diff = fast - slow
-        if self._prev_diff is None:
-            self._prev_diff = diff
-            return
-
-        cross_up = self._prev_diff <= 0.0 < diff
-        cross_down = self._prev_diff >= 0.0 > diff
-        self._prev_diff = diff
 
         qty = Quantity(Decimal(self.cfg.trade_size), instrument.size_precision)
 
         if self._position_side is None:
-            if cross_up:
+            if high > entry_upper:
                 self._open(instrument, OrderSide.BUY, qty, close, "long", atr_value)
-            elif cross_down:
+            elif low < entry_lower:
                 self._open(instrument, OrderSide.SELL, qty, close, "short", atr_value)
             return
 
-        if self._position_side == "long" and cross_down:
+        if self._position_side == "long" and low < exit_lower:
             self._close_open(instrument.id)
             self._reset_position()
-        elif self._position_side == "short" and cross_up:
+        elif self._position_side == "short" and high > exit_upper:
             self._close_open(instrument.id)
             self._reset_position()
 

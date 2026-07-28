@@ -1,27 +1,35 @@
-"""EMA and ATR helpers shared by the live path (src/main.py) and the Nautilus
-backtest strategy (src/strategy.py), so both contexts compute indicators the
-same way instead of drifting apart.
+"""Donchian channel and ATR helpers shared by the live path (src/main.py) and
+the Nautilus backtest strategy (src/strategy.py), so both contexts compute
+indicators the same way instead of drifting apart.
 """
-from typing import Optional
+from collections import deque
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 
-class StreamingEma:
-    """Bar-by-bar EMA update for Nautilus's event-driven `on_bar` loop."""
+class StreamingDonchian:
+    """Rolling N-bar high/low channel for Nautilus's event-driven `on_bar` loop.
+
+    `channel()` reflects only bars seen so far (via `update`), so calling it
+    before updating with the current bar avoids testing a breakout against a
+    channel that already includes that same bar.
+    """
 
     def __init__(self, period: int) -> None:
         self.period = period
-        self.value: Optional[float] = None
+        self._highs: deque = deque(maxlen=period)
+        self._lows: deque = deque(maxlen=period)
 
-    def update(self, price: float) -> float:
-        if self.value is None:
-            self.value = price
-        else:
-            alpha = 2.0 / (self.period + 1)
-            self.value = alpha * price + (1.0 - alpha) * self.value
-        return self.value
+    def channel(self) -> Tuple[Optional[float], Optional[float]]:
+        if len(self._highs) < self.period:
+            return (None, None)
+        return (max(self._highs), min(self._lows))
+
+    def update(self, high: float, low: float) -> None:
+        self._highs.append(high)
+        self._lows.append(low)
 
 
 class StreamingAtr:
@@ -54,8 +62,14 @@ class StreamingAtr:
         return self.value
 
 
-def ema_series(closes: pd.Series, period: int) -> pd.Series:
-    return closes.ewm(span=period, adjust=False).mean()
+def donchian_channels(high: pd.Series, low: pd.Series, period: int) -> Tuple[pd.Series, pd.Series]:
+    """Upper/lower channel at each bar, computed from the *prior* `period`
+    bars only (shift(1) before rolling) so testing the current bar's
+    high/low against it can't look ahead at itself.
+    """
+    upper = high.shift(1).rolling(period).max()
+    lower = low.shift(1).rolling(period).min()
+    return upper, lower
 
 
 def atr_series(high: pd.Series, low: pd.Series, close: pd.Series, period: int) -> pd.Series:

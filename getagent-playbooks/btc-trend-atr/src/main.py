@@ -3,10 +3,11 @@
 Historical (`runtime.is_historical()`): replay through the Nautilus-backed
 managed backtest engine using `src/strategy.py`.
 
-Live (`runtime.is_live()`): recompute the same EMA crossover + ATR stop/target
-from recent closed candles, then let `runtime.emit_signal_or_follow(...)`
-decide whether to actually manage the position (follow-trade subscriptions
-only; signal-only subscriptions only ever emit).
+Live (`runtime.is_live()`): recompute the same Donchian breakout + ATR
+stop/target from recent closed candles, then let
+`runtime.emit_signal_or_follow(...)` decide whether to actually manage the
+position (follow-trade subscriptions only; signal-only subscriptions only
+ever emit).
 """
 import math
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ from typing import Any, Optional
 
 from getagent import backtest, data, runtime
 
-from .indicators import atr_series, ema_series, latest_valid
+from .indicators import atr_series, donchian_channels, latest_valid
 
 _INTERVAL = "1h"
 _INTERVAL_MS = 60 * 60 * 1000
@@ -47,7 +48,7 @@ def _symbol(cfg: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_replay_records(symbol: str, chunks: int = 6) -> list[dict[str, Any]]:
+def _fetch_recent_bars(symbol: str, chunks: int = 6) -> list[dict[str, Any]]:
     """`crypto.futures.kline` caps each request at 1000 bars; chunk backward
     in time to build a longer replay window than a single call can return.
     """
@@ -86,7 +87,7 @@ def _run_historical() -> None:
     cfg = _config()
     symbol = _symbol(cfg)
 
-    records = _fetch_replay_records(symbol)
+    records = _fetch_recent_bars(symbol, chunks=6)
     if not records:
         runtime.emit_signal(
             action="watch",
@@ -170,44 +171,53 @@ def _is_stale(last_bar_open_ms: Optional[int]) -> bool:
     return now_ms - last_close_ms > _MAX_STALE_INTERVALS * _INTERVAL_MS
 
 
-def _live_decision(symbol: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    fast_period = int(cfg.get("fast_period", 12) or 12)
-    slow_period = int(cfg.get("slow_period", 26) or 26)
+def _live_decision(symbol: str, cfg: dict[str, Any], hold_side: Optional[str]) -> dict[str, Any]:
+    entry_period = int(cfg.get("entry_channel_period", 480) or 480)
+    exit_period = int(cfg.get("exit_channel_period", 240) or 240)
     atr_period = int(cfg.get("atr_period", 14) or 14)
-    warmup = max(fast_period, slow_period, atr_period) + 2
+    warmup = max(entry_period, exit_period, atr_period) + 2
 
-    bars = data.crypto.futures.kline(
-        symbol=symbol,
-        interval=_INTERVAL,
-        limit=max(warmup * 3, 100),
-        closed_only=True,
-    )
-    rows = list(data.to_records(bars))
-    frame = data.to_dataframe(bars)
+    # entry_period can be several hundred bars; a single kline call is capped
+    # at 1000, so chunk enough history to cover warmup plus a comfortable buffer.
+    chunks = max(2, (warmup * 2) // 1000 + 1)
+    records = _fetch_recent_bars(symbol, chunks=chunks)
+    if len(records) < warmup:
+        return {"entry_signal": None, "exit_signal": None, "reason": "insufficient warm-up bars", "atr": None}
 
+    frame = backtest.prepare_frame(records, datetime_index="date")
     if frame.empty or len(frame) < warmup:
-        return {"action": "hold", "reason": "insufficient warm-up bars", "atr": None}
+        return {"entry_signal": None, "exit_signal": None, "reason": "insufficient warm-up bars", "atr": None}
 
-    fast = ema_series(frame["close"], fast_period)
-    slow = ema_series(frame["close"], slow_period)
+    entry_upper, entry_lower = donchian_channels(frame["high"], frame["low"], entry_period)
+    exit_upper, exit_lower = donchian_channels(frame["high"], frame["low"], exit_period)
     atr = atr_series(frame["high"], frame["low"], frame["close"], atr_period)
-    diff = fast - slow
 
-    if len(diff) < 2:
-        return {"action": "hold", "reason": "insufficient diff history", "atr": None}
-
-    prev_diff = float(diff.iloc[-2])
-    last_diff = float(diff.iloc[-1])
-    cross_up = prev_diff <= 0.0 < last_diff
-    cross_down = prev_diff >= 0.0 > last_diff
-
-    action = "long" if cross_up else "short" if cross_down else "hold"
+    last_high = float(frame["high"].iloc[-1])
+    last_low = float(frame["low"].iloc[-1])
     last_price = float(frame["close"].iloc[-1])
     atr_value = latest_valid(atr)
-    last_bar_ts = _last_bar_open_ms(rows)
 
+    entry_up_level = latest_valid(entry_upper)
+    entry_low_level = latest_valid(entry_lower)
+    exit_up_level = latest_valid(exit_upper)
+    exit_low_level = latest_valid(exit_lower)
+
+    entry_signal = None
+    if entry_up_level is not None and last_high > entry_up_level:
+        entry_signal = "long"
+    elif entry_low_level is not None and last_low < entry_low_level:
+        entry_signal = "short"
+
+    exit_signal = None
+    if hold_side == "long" and exit_low_level is not None and last_low < exit_low_level:
+        exit_signal = "long_exit"
+    elif hold_side == "short" and exit_up_level is not None and last_high > exit_up_level:
+        exit_signal = "short_exit"
+
+    last_bar_ts = _last_bar_open_ms(records)
     return {
-        "action": action,
+        "entry_signal": entry_signal,
+        "exit_signal": exit_signal,
         "last_price": last_price,
         "atr": atr_value,
         "last_bar_ts": last_bar_ts,
@@ -229,18 +239,14 @@ def _manage_position(
 
     from .risk import compute_stop_target
 
-    # PRE-CHECK
+    # PRE-CHECK (re-read live state right before mutating; the signal above
+    # may have been computed slightly earlier in this same run).
     position_result = trade.contract.current_position(symbol=symbol)
     position = trade.helpers.find_contract_position(position_result, symbol=symbol)
 
-    if position is not None:
-        opposite = (
-            (position.hold_side == "long" and desired_action == "short")
-            or (position.hold_side == "short" and desired_action == "long")
-        )
-        if not opposite:
-            return {"action": "held", "hold_side": position.hold_side}
-
+    if desired_action == "close":
+        if position is None:
+            return {"action": "noop", "reason": "already flat"}
         # EXECUTE
         result = trade.contract.close_position(symbol=symbol, hold_side=position.hold_side)
         if not trade.is_success(result):
@@ -253,6 +259,9 @@ def _manage_position(
             "closed_side": position.hold_side,
             "still_open": still_open is not None,
         }
+
+    if position is not None:
+        return {"action": "held", "hold_side": position.hold_side}
 
     if desired_action not in ("long", "short") or atr_value is None:
         return {"action": "noop"}
@@ -304,6 +313,8 @@ def _manage_position(
 
 
 def _run_live() -> None:
+    from getagent import trade
+
     cfg = _config()
     symbol = _symbol(cfg)
     leverage = int(cfg.get("leverage", 3) or 3)
@@ -311,15 +322,26 @@ def _run_live() -> None:
     stop_multiplier = float(cfg.get("atr_stop_multiplier", 2.0) or 2.0)
     target_multiplier = float(cfg.get("atr_target_multiplier", 3.0) or 3.0)
 
-    decision = _live_decision(symbol, cfg)
-    action = decision["action"]
+    # Read-only position check (safe outside follow-trade branches) decides
+    # whether this run is watching for an entry breakout or an exit-channel
+    # breach on an existing position.
+    position_result = trade.contract.current_position(symbol=symbol)
+    position = trade.helpers.find_contract_position(position_result, symbol=symbol)
+    hold_side = position.hold_side if position is not None else None
+
+    decision = _live_decision(symbol, cfg, hold_side)
     stale = bool(decision.get("stale", False))
+
     if stale:
         # Newest closed bar is too old — refuse to trade on stale data,
-        # regardless of what the crossover says.
+        # regardless of what the channels say.
         action = "hold"
+    elif hold_side is not None:
+        action = "close" if decision.get("exit_signal") else "hold"
+    else:
+        action = decision.get("entry_signal") or "watch"
 
-    confidence = 0.0 if stale else 0.7 if action in ("long", "short") else 0.3
+    confidence = 0.0 if stale else 0.7 if action in ("long", "short", "close") else 0.3
 
     runtime.emit_signal_or_follow(
         action=action,
@@ -331,6 +353,7 @@ def _run_live() -> None:
                 "last_price": decision.get("last_price"),
                 "last_bar_ts": decision.get("last_bar_ts"),
                 "data_stale": stale,
+                "hold_side": hold_side,
             }
         ),
         meta={"reason": decision.get("reason")} if decision.get("reason") else {},

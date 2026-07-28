@@ -13,8 +13,8 @@ strategy:
   config:
     order_id_tag: "001"
     trade_size: "0.01"
-    fast_period: 12
-    slow_period: 26
+    entry_channel_period: 480
+    exit_channel_period: 240
     atr_period: 14
     atr_stop_multiplier: "2.0"
     atr_target_multiplier: "3.0"
