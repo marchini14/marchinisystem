@@ -38,6 +38,14 @@ app.get('/api/results', async (req, res) => {
 // 100k/dan potrošeno za par minuta na 70 istovremenih LLM poziva).
 const HOT_PAIRS_COUNT = parseInt(process.env.HOT_PAIRS_COUNT || '70', 10);
 const LLM_CANDIDATES_COUNT = parseInt(process.env.LLM_CANDIDATES_COUNT || '5', 10);
+// Ranking cijelog HOT_PAIRS_COUNT pool-a po |24h% promjena| bez likvidnosnog
+// filtra zna izvući tanke/egzotične parove (npr. viđeno uživo: QBTSUSDT
+// $751k dnevnog prometa naspram $2.67B za BTC) — na takvom tankom tržištu
+// naš nalog izaziva veći slippage i erratic ponašanje, što je uzrokovalo
+// stvaran veći gubitak. Momentum rangiranje se zato radi samo unutar
+// LIQUID_POOL_SIZE najprometnijih parova (pool je već sortiran po prometu),
+// ne cijelog HOT_PAIRS_COUNT skena.
+const LIQUID_POOL_SIZE = parseInt(process.env.LIQUID_POOL_SIZE || '20', 10);
 const CANDLE_INTERVAL = process.env.CANDLE_INTERVAL || '15m';
 // Default raspored je namjerno rijedak (svaka 2h) — 5 LLM poziva x 12
 // ciklusa/dan = 60 poziva/dan, sigurno ispod 100k TPD budžeta uz razumnu
@@ -80,8 +88,9 @@ async function runAgentsThrottled(agents) {
 // promjeni cijene (jačina momentuma) koristeći ticker podatke koje već
 // imamo — bez ijednog dodatnog poziva na burzu ili LLM.
 async function runScanCycle() {
-  const pool = await bitget.getHotTickers(HOT_PAIRS_COUNT);
-  const shortlist = pool
+  const pool = await bitget.getHotTickers(HOT_PAIRS_COUNT); // već sortirano po prometu
+  const liquidPool = pool.slice(0, LIQUID_POOL_SIZE);
+  const shortlist = liquidPool
     .slice()
     .sort((a, b) => Math.abs(parseFloat(b.price24hPcnt)) - Math.abs(parseFloat(a.price24hPcnt)))
     .slice(0, LLM_CANDIDATES_COUNT)
