@@ -2,18 +2,10 @@ const express = require('express');
 const path = require('path');
 const cron = require('node-cron');
 const { redis, getResults, getAgentSummary } = require('./shared/redis');
+const risk = require('./shared/risk');
 
 // Agents
-const ZeroAgent        = require('./agents/zero');
-const NovaAgent        = require('./agents/nova');
-const NewtonTeslaAgent = require('./agents/newton-tesla');
-const ZoraAgent        = require('./agents/zora');
-const SatoshiAgent     = require('./agents/satoshi');
-const TuringAgent      = require('./agents/turing');
-const PlanckBohrAgent  = require('./agents/planck-bohr');
-const ChronosAgent     = require('./agents/chronos');
-const EulerAgent       = require('./agents/euler');
-const MendeleevAgent   = require('./agents/mendeleev');
+const TradingAgent = require('./agents/trading-agent');
 
 const PORT = process.env.PORT || 8080;
 const app = express();
@@ -36,21 +28,26 @@ app.get('/api/results', async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString(), agents: 10 }));
+// Kapital iz shared/risk.js (MAX_CAPITAL_USD) ravnomjerno podijeljen po agentu.
+const SYMBOLS = [
+  { symbol: 'BTCUSDT', interval: '15m', name: 'Btc-Trader' },
+  { symbol: 'ETHUSDT', interval: '30m', name: 'Eth-Trader' },
+  { symbol: 'SOLUSDT', interval: '1H',  name: 'Sol-Trader' },
+];
+const capitalShareUsd = risk.MAX_CAPITAL_USD / SYMBOLS.length;
 
 // Agent registry: [agent, cron-expression]
-const AGENTS = [
-  [new ZeroAgent(),        '*/30 * * * *'],    // svakih 30 min
-  [new NovaAgent(),        '10 */1 * * *'],    // svaki sat u :10
-  [new NewtonTeslaAgent(), '*/15 * * * *'],    // svakih 15 min
-  [new ZoraAgent(),        '*/45 * * * *'],    // svakih 45 min
-  [new SatoshiAgent(),     '*/20 * * * *'],    // svakih 20 min
-  [new TuringAgent(),      '0 */2 * * *'],     // svakih 2 sata
-  [new PlanckBohrAgent(),  '*/10 * * * *'],    // svakih 10 min
-  [new ChronosAgent(),     '5 */1 * * *'],     // svaki sat u :05
-  [new EulerAgent(),       '0 */4 * * *'],     // svakih 4 sata
-  [new MendeleevAgent(),   '0 */3 * * *'],     // svakih 3 sata
-];
+const AGENTS = SYMBOLS.map(({ symbol, interval, name }) => [
+  new TradingAgent(name, { symbol, interval, capitalShareUsd, leverage: risk.MAX_LEVERAGE }),
+  '*/15 * * * *', // svakih 15 min
+]);
+
+app.get('/health', (_, res) => res.json({
+  status: 'ok',
+  ts: new Date().toISOString(),
+  agents: AGENTS.length,
+  liveTrading: risk.LIVE_TRADING,
+}));
 
 async function runAgent(agent) {
   try { await agent.execute(); }
@@ -68,6 +65,14 @@ function scheduleAgents() {
 async function start() {
   await redis.ping();
   console.log('[Redis] ping OK');
+
+  console.log(`[Risk] LIVE_TRADING=${risk.LIVE_TRADING} MAX_CAPITAL_USD=${risk.MAX_CAPITAL_USD} MAX_LEVERAGE=${risk.MAX_LEVERAGE} DAILY_LOSS_LIMIT_PCT=${risk.DAILY_LOSS_LIMIT_PCT}`);
+  if (!risk.LIVE_TRADING) {
+    console.log('[Risk] LIVE_TRADING nije "true" — agenti rade u dry-run modu, ne šalju stvarne naloge.');
+  }
+  if (await risk.isHalted()) {
+    console.log(`[Risk] KILL-SWITCH AKTIVAN: ${await risk.getHaltReason()}`);
+  }
 
   // Run each agent once on startup so dashboard isn't empty
   console.log('[Startup] Running all agents once...');
