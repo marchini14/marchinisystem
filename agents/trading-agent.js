@@ -6,6 +6,21 @@ const risk = require('../shared/risk');
 
 const MIN_CONFIDENCE = 0.45;
 
+// LLM treba dovoljno svijeća unatrag da procijeni putanju (trend), ne samo
+// zadnjih par — 12h pokriva i kratkoročni šum i stvarni smjer kretanja.
+const LOOKBACK_HOURS = 12;
+
+function intervalToMinutes(interval) {
+  const match = /^(\d+)([mHhDd])$/.exec(interval);
+  if (!match) throw new Error(`Nepoznat format intervala: ${interval}`);
+  const n = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  if (unit === 'm') return n;
+  if (unit === 'h') return n * 60;
+  if (unit === 'd') return n * 60 * 24;
+  throw new Error(`Nepoznata jedinica intervala: ${match[2]}`);
+}
+
 // Generički futures trading agent: dohvaća stvarne tržišne podatke s Bitgeta,
 // pita LLM (OpenRouter primarno, Groq fallback — shared/llm.js) za odluku
 // (long/short/flat) i izvršava je unutar limita iz shared/risk.js. Dok
@@ -17,12 +32,13 @@ class TradingAgent extends BaseAgent {
     this.interval = interval;
     this.capitalShareUsd = capitalShareUsd;
     this.leverage = leverage;
+    this.candleLimit = Math.ceil((LOOKBACK_HOURS * 60) / intervalToMinutes(interval));
   }
 
   async fetchMarketSnapshot() {
     const [ticker, candles] = await Promise.all([
       bitget.getTicker(this.symbol),
-      bitget.getCandles(this.symbol, this.interval, 30),
+      bitget.getCandles(this.symbol, this.interval, this.candleLimit),
     ]);
     return { ticker, candles };
   }
