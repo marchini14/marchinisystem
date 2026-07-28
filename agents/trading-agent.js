@@ -93,12 +93,12 @@ class TradingAgent extends BaseAgent {
       return { skipped: true, decision };
     }
 
-    await bitget.setLeverage(this.symbol, this.leverage, decision.action);
+    const effectiveLeverage = await bitget.setLeverage(this.symbol, this.leverage, decision.action);
     const kellyFraction = await risk.getKellyFraction();
     const qty = risk.capQty({
       equityShareUsd: this.capitalShareUsd,
       price,
-      leverage: this.leverage,
+      leverage: effectiveLeverage,
       kellyFraction,
     });
     const stopLossPrice =

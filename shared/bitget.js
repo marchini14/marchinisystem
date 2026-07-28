@@ -99,13 +99,23 @@ async function getPosition(symbol) {
 // /api/v3/account/set-leverage) u Bitgetovoj stvarnoj API referenci — SDK-ov
 // TS tip ga navodi, ali burza ga odbija (400 Bad Request). Bez njega koristi
 // se account-level default margin mode.
+//
+// Mnogi manji parovi imaju maxLeverage niži od globalnog MAX_LEVERAGE (npr.
+// 5x umjesto 10x) — bez capiranja burza odbija cijeli zahtjev (25223 "Exceeds
+// Max. leverage"). Vraća stvarno primijenjeni leverage da se veličina
+// pozicije računa na temelju onoga što je burza stvarno prihvatila, ne
+// zatraženog iznosa.
 async function setLeverage(symbol, leverage, posSide) {
-  return getClient().setLeverage({
+  const instrument = await getInstrument(symbol);
+  const maxLeverage = parseFloat(instrument.maxLeverage) || Number(leverage);
+  const effectiveLeverage = Math.min(Number(leverage), maxLeverage);
+  await getClient().setLeverage({
     category: CATEGORY,
     symbol,
-    leverage: String(leverage),
+    leverage: String(effectiveLeverage),
     posSide,
   });
+  return effectiveLeverage;
 }
 
 // stopLoss/takeProfit su apsolutne cijene (ne postoci) — agent ih računa iz odluke.
