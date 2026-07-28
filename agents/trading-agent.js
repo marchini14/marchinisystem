@@ -77,10 +77,13 @@ class TradingAgent extends BaseAgent {
 
     if (hasPosition && (wantsFlat || decision.action !== existingPosition.posSide)) {
       await bitget.closePosition(this.symbol, existingPosition.posSide);
-      const realizedPnl = parseFloat(existingPosition.unrealisedPnl || '0');
-      await risk.recordTradeOutcome(this.symbol, realizedPnl);
-      await logResult(this.name, `Zatvorena ${existingPosition.posSide} pozicija na ${this.symbol}`, realizedPnl, 'USD', { decision });
-      return { closed: true, realizedPnl, decision };
+      // Stvaran realizirani P&L (i risk-limit/Kelly knjiženje) dolazi iz
+      // server.js: risk.reconcileClosedPositions() protiv Bitgetove stvarne
+      // povijesti — ne iz unrealisedPnl ovdje (samo procjena u trenutku
+      // odluke, i ne pokriva pozicije zatvorene burzinim SL/TP nalogom).
+      const estimatedPnl = parseFloat(existingPosition.unrealisedPnl || '0');
+      await logResult(this.name, `Zatvorena ${existingPosition.posSide} pozicija na ${this.symbol}`, estimatedPnl, 'USD', { decision });
+      return { closed: true, estimatedPnl, decision };
     }
 
     if (hasPosition) {

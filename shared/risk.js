@@ -95,6 +95,23 @@ async function recordTradeOutcome(symbol, realizedPnlUsd) {
   }
 }
 
+// Usklađuje stvarno zatvorene pozicije s dnevnim risk limitom / Kelly
+// poviješću. Nužno je proći kroz OVU funkciju, ne kroz agentov vlastiti
+// "closed" put — jer se pozicija može zatvoriti i automatski (burzin
+// stop-loss/take-profit bracket nalog), a bot za to inače ne bi ni znao pa se
+// takav gubitak nikad ne bi ubrojio u dnevni limit gubitka. Dedup po
+// pozicijeId (Bitgetov 'positionId') preko Redis SET NX osigurava da se svaki
+// trade broji točno jednom bez obzira koliko se puta reconcile pozove za isti
+// vremenski prozor.
+async function reconcileClosedPositions(closedPositions) {
+  for (const p of closedPositions) {
+    const seenKey = `risk:seen_position:${p.positionId}`;
+    const wasNew = await redis.set(seenKey, '1', 'EX', 7 * 24 * 3600, 'NX');
+    if (wasNew !== 'OK') continue; // već ubrojeno u prethodnom ciklusu
+    await recordTradeOutcome(p.symbol, parseFloat(p.netProfit || '0'));
+  }
+}
+
 // Kelly udio kapitala izračunat iz stvarne (ne pretpostavljene) povijesti
 // tradeova. Vraća null dok nema dovoljno uzorka (poziva capQty da onda
 // koristi punu ravnu alokaciju umjesto nagađanja na premalo podataka).
@@ -141,6 +158,7 @@ module.exports = {
   getHaltReason,
   recordPnl,
   recordTradeOutcome,
+  reconcileClosedPositions,
   getKellyFraction,
   capQty,
 };

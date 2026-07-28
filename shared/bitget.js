@@ -149,11 +149,27 @@ async function closePosition(symbol, posSide) {
   return getClient().closeAllPositions({ category: CATEGORY, symbol, posSide });
 }
 
+// Sve pozicije zatvorene u zadanom vremenskom prozoru, bez obzira jesu li
+// zatvorene bot-ovom eksplicitnom odlukom ili automatski (burzin
+// stop-loss/take-profit bracket nalog) — koristi se za usklađivanje stvarnih
+// gubitaka/dobitaka s dnevnim risk limitom (shared/risk.js), jer bot inače
+// ne bi ni znao za close koji sam nije inicirao.
+async function getRecentClosedPositions(sinceMs) {
+  const res = await getClient().getPositionHistory({
+    category: CATEGORY,
+    startTime: String(sinceMs),
+    endTime: String(Date.now()),
+    limit: '100',
+  });
+  return res.data?.list || [];
+}
+
 module.exports = {
   CATEGORY,
   getInstrument,
   getHotTickers,
   getOpenPositionSymbols,
+  getRecentClosedPositions,
   getTicker,
   getCandles,
   getUsdtEquity,
