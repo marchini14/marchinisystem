@@ -42,6 +42,17 @@ app.post('/api/admin/reset-killswitch', express.json(), async (req, res) => {
   res.json({ ok: true });
 });
 
+// Isti obrazac kao gore — namjerno ručna odluka da se povijest tradeova
+// (Kelly sizing input) obriše kad postane nereprezentativna.
+app.post('/api/admin/clear-trade-history', express.json(), async (req, res) => {
+  const secret = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!process.env.ADMIN_SECRET || secret !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  await risk.clearTradeHistory();
+  res.json({ ok: true });
+});
+
 // Dvoslojno skeniranje: HOT_PAIRS_COUNT parova s najvećim 24h prometom
 // (shared/bitget.js: getHotTickers) se svaki ciklus BESPLATNO provjerava
 // (samo ticker podaci, bez LLM poziva) i rangira po jačini 24h momentuma.

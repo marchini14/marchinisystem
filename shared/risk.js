@@ -54,6 +54,15 @@ async function getHaltReason() {
   return redis.get(HALT_REASON_KEY);
 }
 
+// Ručno, namjerno brisanje povijesti tradeova — koristi se kad ranija
+// povijest više ne predstavlja stvarnu izvedbu sustava (npr. kontaminirana
+// tradeovima iz razdoblja prije nego su bugovi popravljeni), pa Kelly sizing
+// (getKellyFraction) treba krenuti ispočetka umjesto da nastavi računati na
+// nereprezentativnim podacima.
+async function clearTradeHistory() {
+  await redis.del(TRADE_HISTORY_KEY);
+}
+
 // Poziva se nakon svakog zatvaranja pozicije s realiziranim P&L u USD.
 // Kad dnevni gubitak pređe DAILY_LOSS_LIMIT_PCT od MAX_CAPITAL_USD, aktivira
 // kill-switch i sve agente zaustavlja dok netko ručno ne pozove resetKillSwitch().
@@ -159,6 +168,7 @@ module.exports = {
   recordPnl,
   recordTradeOutcome,
   reconcileClosedPositions,
+  clearTradeHistory,
   getKellyFraction,
   capQty,
 };
