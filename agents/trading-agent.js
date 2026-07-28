@@ -62,7 +62,7 @@ class TradingAgent extends BaseAgent {
     if (hasPosition && (wantsFlat || decision.action !== existingPosition.posSide)) {
       await bitget.closePosition(this.symbol, existingPosition.posSide);
       const realizedPnl = parseFloat(existingPosition.unrealisedPnl || '0');
-      await risk.recordPnl(realizedPnl);
+      await risk.recordTradeOutcome(this.symbol, realizedPnl);
       await logResult(this.name, `Zatvorena ${existingPosition.posSide} pozicija na ${this.symbol}`, realizedPnl, 'USD', { decision });
       return { closed: true, realizedPnl, decision };
     }
@@ -78,7 +78,13 @@ class TradingAgent extends BaseAgent {
     }
 
     await bitget.setLeverage(this.symbol, this.leverage, decision.action);
-    const qty = risk.capQty({ equityShareUsd: this.capitalShareUsd, price, leverage: this.leverage });
+    const kellyFraction = await risk.getKellyFraction();
+    const qty = risk.capQty({
+      equityShareUsd: this.capitalShareUsd,
+      price,
+      leverage: this.leverage,
+      kellyFraction,
+    });
     const stopLossPrice =
       decision.action === 'long'
         ? price * (1 - decision.stopLossPct / 100)
@@ -100,6 +106,7 @@ class TradingAgent extends BaseAgent {
     await logResult(this.name, `Otvorena ${decision.action} pozicija na ${this.symbol} @ ${price}`, 0, 'USD', {
       decision,
       qty,
+      kellyFraction,
       stopLossPrice,
       takeProfitPrice,
       orderId: order.data?.orderId,

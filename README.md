@@ -28,9 +28,16 @@ svjesno drugačija, rizičnija kategorija.
    prava tržišna analiza i prava LLM odluka idu u `agent:log` u Redisu, ali se
    ništa ne šalje na burzu. Provjeri par ciklusa u ovom modu prije nego upališ
    `LIVE_TRADING=true`.
-4. Kill-switch: ako dnevni gubitak pređe `DAILY_LOSS_LIMIT_PCT`, svi agenti se
+4. Kill-switch: ako dnevni gubitak pređe `DAILY_LOSS_LIMIT_PCT`, **ili** ako se
+   dogodi `MAX_CONSECUTIVE_LOSSES` gubitaka zaredom (cool-down), svi agenti se
    automatski zaustavljaju (Redis ključ `risk:killswitch`) dok se ručno ne
-   pozove `resetKillSwitch()` iz `shared/risk.js`.
+   pozove `resetKillSwitch()` iz `shared/risk.js` (to briše i brojač
+   uzastopnih gubitaka, ne samo kill-switch).
+5. Position sizing uči iz stvarne povijesti tradeova: dok ima manje od
+   `KELLY_MIN_TRADES` zatvorenih tradeova u Redisu, agenti koriste punu ravnu
+   alokaciju (`capitalShareUsd`). Nakon toga `shared/risk.js: getKellyFraction()`
+   računa half-Kelly udio iz stvarnog win-ratea i avg win/loss (`shared/quant.js:
+   kellyCriterion`), hard-capiran na `KELLY_FRACTION_CAP`.
 
 ### Rizik
 
