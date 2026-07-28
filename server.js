@@ -29,6 +29,19 @@ app.get('/api/results', async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Kill-switch reset je namjerno ručna, ljudska odluka (shared/risk.js) — ovaj
+// endpoint postoji samo da omogući tu odluku izvana (Redis nije dohvatljiv
+// izvan Northflank mreže), zaštićen dijeljenom tajnom da ne bude javno
+// dostupan bilo kome tko pogodi URL.
+app.post('/api/admin/reset-killswitch', express.json(), async (req, res) => {
+  const secret = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!process.env.ADMIN_SECRET || secret !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  await risk.resetKillSwitch();
+  res.json({ ok: true });
+});
+
 // Dvoslojno skeniranje: HOT_PAIRS_COUNT parova s najvećim 24h prometom
 // (shared/bitget.js: getHotTickers) se svaki ciklus BESPLATNO provjerava
 // (samo ticker podaci, bez LLM poziva) i rangira po jačini 24h momentuma.
