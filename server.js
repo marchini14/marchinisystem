@@ -88,6 +88,13 @@ async function runAgentsThrottled(agents) {
 // promjeni cijene (jačina momentuma) koristeći ticker podatke koje već
 // imamo — bez ijednog dodatnog poziva na burzu ili LLM.
 async function runScanCycle() {
+  // Uskladi stvaran realizirani P&L PRIJE nego agenti donesu nove odluke —
+  // ovo hvata i pozicije zatvorene burzinim SL/TP nalogom (bot inače za njih
+  // ne bi ni znao), pa dnevni loss-limit/kill-switch vidi stvarno stanje.
+  // 6h prozor s dedupom po positionId (shared/risk.js) — siguran preklap.
+  const closedPositions = await bitget.getRecentClosedPositions(Date.now() - 6 * 60 * 60 * 1000);
+  await risk.reconcileClosedPositions(closedPositions);
+
   const pool = await bitget.getHotTickers(HOT_PAIRS_COUNT); // već sortirano po prometu
   const liquidPool = pool.slice(0, LIQUID_POOL_SIZE);
   const shortlist = liquidPool
