@@ -62,9 +62,17 @@ async function getUsdtEquity() {
   return parseFloat(res.data?.usdtEquity || '0');
 }
 
-async function getPosition(symbol, posSide) {
-  const res = await getClient().getCurrentPosition({ category: CATEGORY, symbol, posSide });
-  return res.data?.[0] || null;
+// Bitget vraća { list: [...] }, ne direktni niz — res.data?.[0] bi uvijek bio
+// undefined i agent nikad ne bi vidio postojeću poziciju (otvarao bi nove
+// naloge umjesto da zatvori/okrene postojeći). U hedge_mode računu isti
+// simbol teoretski može imati i long i short slot odvojeno; filtriramo na
+// stvarno otvorene (total > 0) i vraćamo prvu — normalan tok (zatvori pa tek
+// onda otvori suprotni smjer, nikad oboje isti ciklus) sprječava da ih ikad
+// bude više od jedne otvorene.
+async function getPosition(symbol) {
+  const res = await getClient().getCurrentPosition({ category: CATEGORY, symbol });
+  const positions = (res.data?.list || []).filter((p) => parseFloat(p.total) > 0);
+  return positions[0] || null;
 }
 
 // marginMode nije dokumentiran parametar za set-leverage (POST
