@@ -86,11 +86,19 @@ async function runScanCycle() {
     .sort((a, b) => Math.abs(parseFloat(b.price24hPcnt)) - Math.abs(parseFloat(a.price24hPcnt)))
     .slice(0, LLM_CANDIDATES_COUNT)
     .map((t) => t.symbol);
-  lastScan = { pool: pool.map((t) => t.symbol), shortlist };
-  console.log(`[Scan] ${pool.length} parova skenirano, top ${shortlist.length} po momentumu: ${shortlist.join(', ')}`);
+
+  // Stvarno otvorene pozicije se uvijek moraju nastaviti pratiti (HOLD/CLOSE)
+  // čak i ako njihov par ispadne iz shortliste momentuma — inače bi ostale
+  // "siroče" bez LLM ponovne procjene (SL/TP nalog na burzi i dalje štiti,
+  // ali bot ih više ne bi aktivno upravljao).
+  const openSymbols = await bitget.getOpenPositionSymbols();
+  const activeSymbols = [...new Set([...shortlist, ...openSymbols])];
+
+  lastScan = { pool: pool.map((t) => t.symbol), shortlist, openSymbols };
+  console.log(`[Scan] ${pool.length} parova skenirano, top ${shortlist.length} po momentumu: ${shortlist.join(', ')}${openSymbols.length ? `; + ${openSymbols.length} otvorenih pozicija izvan shortliste: ${openSymbols.filter((s) => !shortlist.includes(s)).join(', ')}` : ''}`);
 
   const capitalShareUsd = risk.MAX_CAPITAL_USD / shortlist.length;
-  const agents = shortlist.map((symbol) => new TradingAgent(`${symbol}-Trader`, {
+  const agents = activeSymbols.map((symbol) => new TradingAgent(`${symbol}-Trader`, {
     symbol,
     interval: CANDLE_INTERVAL,
     capitalShareUsd,

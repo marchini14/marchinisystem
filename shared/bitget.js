@@ -80,6 +80,15 @@ async function getUsdtEquity() {
 // stvarno otvorene (total > 0) i vraćamo prvu — normalan tok (zatvori pa tek
 // onda otvori suprotni smjer, nikad oboje isti ciklus) sprječava da ih ikad
 // bude više od jedne otvorene.
+// Svi trenutno stvarno otvoreni simboli na računu (bez obzira ulaze li u
+// trenutnu "vruću" listu) — koristi se da bot ne izgubi iz vida poziciju čiji
+// par ispadne iz shortliste momentuma.
+async function getOpenPositionSymbols() {
+  const res = await getClient().getCurrentPosition({ category: CATEGORY });
+  const positions = (res.data?.list || []).filter((p) => parseFloat(p.total) > 0);
+  return [...new Set(positions.map((p) => p.symbol))];
+}
+
 async function getPosition(symbol) {
   const res = await getClient().getCurrentPosition({ category: CATEGORY, symbol });
   const positions = (res.data?.list || []).filter((p) => parseFloat(p.total) > 0);
@@ -134,6 +143,7 @@ module.exports = {
   CATEGORY,
   getInstrument,
   getHotTickers,
+  getOpenPositionSymbols,
   getTicker,
   getCandles,
   getUsdtEquity,
