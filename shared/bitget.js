@@ -57,13 +57,16 @@ async function getPosition(symbol, posSide) {
   return res.data?.[0] || null;
 }
 
+// marginMode nije dokumentiran parametar za set-leverage (POST
+// /api/v3/account/set-leverage) u Bitgetovoj stvarnoj API referenci — SDK-ov
+// TS tip ga navodi, ali burza ga odbija (400 Bad Request). Bez njega koristi
+// se account-level default margin mode.
 async function setLeverage(symbol, leverage, posSide) {
   return getClient().setLeverage({
     category: CATEGORY,
     symbol,
     leverage: String(leverage),
     posSide,
-    marginMode: 'isolated',
   });
 }
 
@@ -76,6 +79,7 @@ async function placeMarketOrder({ symbol, side, posSide, qty, stopLossPrice, tak
     throw new Error(`Izračunata količina ${roundedQty} manja je od minOrderQty ${minQty} za ${symbol}`);
   }
 
+  // marginMode omitted: not a documented place-order parameter (see setLeverage).
   return getClient().submitNewOrder({
     category: CATEGORY,
     symbol,
@@ -83,7 +87,6 @@ async function placeMarketOrder({ symbol, side, posSide, qty, stopLossPrice, tak
     posSide,
     orderType: 'market',
     qty: String(roundedQty),
-    marginMode: 'isolated',
     reduceOnly: 'no',
     stopLoss: stopLossPrice ? String(stopLossPrice) : undefined,
     takeProfit: takeProfitPrice ? String(takeProfitPrice) : undefined,

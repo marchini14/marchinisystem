@@ -36,7 +36,11 @@ class BaseAgent {
       this.log('DONE', { result });
       return result;
     } catch (err) {
-      this.log('ERROR', { error: err.message });
+      // bitget-api's BaseRestClient throws a plain object ({ code, message,
+      // body, headers }) on non-2xx responses, not a real Error — err.message
+      // there is just the generic HTTP status text (e.g. "Bad Request"),
+      // while err.body has Bitget's actual validation error. Capture both.
+      this.log('ERROR', { error: err.message || String(err), body: err.body });
     }
   }
 }
