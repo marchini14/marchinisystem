@@ -1,0 +1,127 @@
+name: btc-trend-atr
+display_name: "BTC Trend Follower (ATR Risk)"
+display_name_i18n:
+  en: "BTC Trend Follower (ATR Risk)"
+  zh: "BTC趋势跟随策略（ATR风控）"
+  zh-tw: "BTC趨勢跟隨策略（ATR風控）"
+  es: "Seguidor de tendencia BTC (riesgo ATR)"
+  ja: "BTCトレンドフォロー（ATRリスク管理）"
+  vi: "Chiến lược theo xu hướng BTC (rủi ro ATR)"
+version: "1.0.0"
+description: "Trend-following BTC perpetual strategy with volatility-scaled stop-loss and take-profit"
+description_i18n:
+  en: "Trend-following BTC perpetual strategy with volatility-scaled stop-loss and take-profit"
+  zh: "带波动率自适应止损止盈的BTC永续趋势跟随策略"
+  zh-tw: "帶波動率自適應停損停利的BTC永續趨勢跟隨策略"
+  es: "Estrategia de tendencia BTC perpetua con stop-loss y take-profit escalados por volatilidad"
+  ja: "ボラティリティ連動のストップロス・テイクプロフィットを備えたBTC無期限トレンドフォロー戦略"
+  vi: "Chiến lược theo xu hướng BTC vĩnh viễn với stop-loss và take-profit theo biến động"
+long_description: |
+  This Playbook targets Bitcoin perpetual futures and bets that once a genuine
+  trend forms, price tends to travel in that direction for a while before
+  reversing, rather than chopping sideways. It aims to capture the middle
+  portion of sustained directional moves rather than trying to call tops or
+  bottoms, and it only acts once a trend regime is confirmed rather than
+  anticipating one.
+
+  The strategy enters long when short-term momentum clearly aligns with and
+  leads the longer-term trend to the upside, treating that alignment as
+  confirmation that a fresh bullish regime has taken hold. It enters short on
+  the mirror-image bearish alignment, where short-term momentum drops beneath
+  the longer-term trend. Entries trigger only at the moment alignment first
+  forms, not on every bar where it persists, so the strategy waits for
+  confirmation rather than jumping in early.
+
+  Positions close either when the trend alignment fades and reverses toward
+  the opposite regime, or when price moves against the position by a distance
+  tied to how volatile the market currently is, whichever happens first. A
+  separate, wider volatility-scaled level takes profit if price runs strongly
+  in the position's favor before the trend has a chance to reverse. Because
+  both the stop and the take-profit scale with prevailing volatility rather
+  than a fixed distance, the strategy adjusts its risk tolerance automatically
+  as market conditions calm down or turn turbulent.
+
+  Subscribers can tune leverage, a tunable parameter that amplifies both
+  potential upside and potential drawdown equally without making the strategy
+  more selective about which trades it takes. Margin budget sets the capital
+  this strategy is allowed to risk and is the denominator used for return
+  reporting. Two further tunables control how far the protective stop and the
+  profit target sit relative to current volatility: widening the stop reduces
+  how often ordinary noise closes a trade early at the cost of a larger loss
+  when a trade is wrong, and widening the target asks for a larger favorable
+  move before locking in gains.
+
+  This strategy underperforms in choppy, range-bound markets where short-term
+  momentum flips back and forth without a real trend forming, producing a
+  string of small losses. Sudden volatility expansion around major news events
+  can widen the protective stop enough that a single losing trade costs more
+  than usual before it closes. Persistent funding-rate drag on a held position
+  and slippage during fast markets both erode live returns relative to
+  backtest assumptions. Past backtest performance is not a guarantee of live
+  profitability; only subscribe with capital you can tolerate losing in full,
+  and treat the drawdown risk of a leveraged, unsuitable-regime trend strategy
+  as real.
+
+market_type: contract
+trading_symbols: ["BTCUSDT"]
+output_kind: trade_strategy
+tags: ["trend", "atr", "risk-managed", "btc", "contract"]
+
+decision_mode: deterministic
+backtest_support: full
+runtime_profile: deterministic
+execution_mode: signal_only
+follow_trade_supported: true
+
+schedule:
+  cron: "0 * * * *"
+  tz: "UTC"
+
+strategy_config:
+  trading_symbols: ["BTCUSDT"]
+  fast_period: 12
+  slow_period: 26
+  atr_period: 14
+  atr_stop_multiplier: "2.0"
+  atr_target_multiplier: "3.0"
+  leverage: 3
+  margin_budget: "100"
+
+user_config_schema:
+  trading_symbols:
+    type: array
+    item_type: string
+    default: ["BTCUSDT"]
+    options: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    aliases:
+      btc: BTCUSDT
+      bitcoin: BTCUSDT
+      eth: ETHUSDT
+      sol: SOLUSDT
+    min_items: 1
+    max_items: 1
+    label: "Trading symbol"
+  leverage:
+    type: integer
+    default: 3
+    min: 1
+    max: 10
+    aliases:
+      3x: 3
+      5x: 5
+    label: "Leverage"
+  margin_budget:
+    type: string
+    default: "100"
+    pattern: "^[0-9]+(\\.[0-9]+)?$"
+    label: "Margin budget USDT"
+  atr_stop_multiplier:
+    type: string
+    default: "2.0"
+    pattern: "^[0-9]+(\\.[0-9]+)?$"
+    label: "Stop-loss volatility multiplier"
+  atr_target_multiplier:
+    type: string
+    default: "3.0"
+    pattern: "^[0-9]+(\\.[0-9]+)?$"
+    label: "Take-profit volatility multiplier"
