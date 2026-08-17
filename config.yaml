@@ -1,0 +1,55 @@
+# marchinisystem - konfiguracija bota
+#
+# mode: paper = simulacija, ne salje naloge na Bitget (DEFAULT, sigurno)
+#       live  = salje prave naloge, trosi pravi novac
+mode: paper
+
+# Koliko kapitala bot smije koristiti ukupno (USDT).
+# U paper modu ovo je pocetni virtualni balans.
+equity: 100.0
+
+# --- Odabir parova (screener) ---
+screener:
+  # Minimalni volumen 24h u USDT. Ispod ovoga je nelikvidno - spread te pojede.
+  min_volume_24h: 5000000
+  # Preskoci parove koji su vec eksplodirali - kupovina na vrhu je najgori ulaz.
+  max_change_24h_pct: 25.0
+  # Minimalna volatilnost (ATR kao % cijene). Ispod ovoga nema sta zaraditi.
+  min_atr_pct: 1.0
+  # Maksimalni |funding rate| po intervalu. Visok funding = placas za pozicijom.
+  max_abs_funding: 0.0005
+  # Koliko najboljih parova bot prati.
+  top_n: 12
+  # Rucno izbacivanje simbola (npr. tokenizirane akcije, egzoticni parovi).
+  blacklist: []
+
+# --- Strategija: Donchian breakout uz EMA trend filter i ATR stop ---
+strategy:
+  timeframe: 1H
+  donchian_lookback: 20     # breakout kanal
+  ema_trend: 50             # ulazimo samo u smjeru trenda
+  atr_period: 14
+  atr_stop_mult: 2.0        # stop = 2 x ATR od ulaza
+  atr_target_mult: 3.0      # take profit = 3 x ATR  -> R:R 1.5
+  allow_short: true
+
+# --- Risk management: ovo je dio koji te cuva ---
+risk:
+  leverage: 5
+  # Koliko % kapitala rizikujes po trejdu (do stopa). 1% je konzervativno.
+  risk_per_trade_pct: 1.0
+  # Maksimalno otvorenih pozicija istovremeno.
+  max_open_positions: 3
+  # Bot staje za danas ako izgubi ovoliko % kapitala.
+  daily_loss_limit_pct: 5.0
+  # Odbij trejd ako round-trip fee pojede vise od ovoliko % ocekivanog profita.
+  max_fee_share_of_target_pct: 15.0
+  # Minimalna udaljenost likvidacije od ulaza, kao multiplikator stopa.
+  # 1.5 znaci: likvidacija mora biti barem 50% dalje od stopa.
+  min_liq_distance_vs_stop: 1.5
+
+# --- Loop ---
+runtime:
+  poll_seconds: 300      # koliko cesto bot provjerava trziste
+  state_file: state/bot_state.json
+  log_file: logs/bot.log
