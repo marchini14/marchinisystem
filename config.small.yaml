@@ -1,0 +1,69 @@
+# Config za MALI kapital (~2-10 USDT).
+#
+# Pokreni:  python -m marchini run -c config.small.yaml
+#
+# Zasto postoji: default config.yaml trazi min_atr_pct 1.0 i risk 1%, i sa 2 USDT
+# ne prolazi NIJEDAN par. Izmjereno preko risk modula na 52 likvidna para sa
+# kapitalom 2.14 USDT - broj parova koji prolaze sve provjere:
+#
+#     leverage   risk 1%   risk 2%   risk 5%
+#     3x            0         3        22
+#     5x            0         3        24
+#    10x            0         3        24
+#
+# Parovi koji prolaze su mirni majori - BTCUSDT (ATR 0.29%), DOGEUSDT (0.36%),
+# XRPUSDT (0.39%), XAGUSDT (0.41%). Nizak ATR ovdje POMAZE: stop je blizu ulaza,
+# pa ista kolicina rizika kupuje veci notional. Volatilni altcoini sa ATR 5-10%
+# su ovako malom kapitalu nedostupni.
+#
+# Dvije stvari koje stvarno ogranicavaju, a nisu ocigledne:
+#
+#   1. Pri 1% rizika kolicina se zaokruzi na NULU, prije nego notional postane
+#      problem: 1% od 2.14 je 0.0214 USDT rizika, sto na BTC stopu od ~369 daje
+#      0.000058 BTC - ispod koraka burze od 0.0001. Zato risk 2%, ne 1%.
+#
+#   2. Pri 3x margina drzi najvise 2.14 x 3 / 63545 = 0.0001 BTC, sto je manje
+#      nego sto rizik dozvoljava. Na ovom kapitalu velicinu odredjuje kapacitet
+#      margine, ne ATR - zato dizanje rizika iznad 2% ovdje ne mijenja nista.
+mode: paper
+
+equity: 2.14
+
+screener:
+  # KLJUCNA razlika od default configa: pustamo parove niske volatilnosti,
+  # jer su oni jedini na kojima ovaj kapital moze sastaviti poziciju.
+  min_atr_pct: 0.20
+  # Samo najlikvidnije - na malom notionalu spread boli procentualno vise.
+  min_volume_24h: 50000000
+  max_change_24h_pct: 15.0
+  max_abs_funding: 0.0005
+  top_n: 8
+  blacklist: []
+
+strategy:
+  timeframe: 1H
+  donchian_lookback: 20
+  ema_trend: 50
+  atr_period: 14
+  atr_stop_mult: 2.0
+  atr_target_mult: 3.0
+  allow_short: true
+
+risk:
+  # 3x je najniza vrijednost koja prolazi, i namjerno je izabrana: pri 3x je
+  # likvidacija ~32% od ulaza, a stop ~0.6-0.8%, pa je margina za gresku ogromna.
+  leverage: 3
+  # 2% je minimum na kojem notional dosegne 5 USDT sa ovim kapitalom.
+  # Ne dizi na 5-10% - tabela gore pokazuje da tada prolazi vise parova, ali
+  # 10% rizika po trejdu znaci da 7 gubitaka u nizu prepolovi racun.
+  risk_per_trade_pct: 2.0
+  # Jedna pozicija: margina od 2.12 USDT vec zauzima skoro cijeli kapital.
+  max_open_positions: 1
+  daily_loss_limit_pct: 5.0
+  max_fee_share_of_target_pct: 15.0
+  min_liq_distance_vs_stop: 1.5
+
+runtime:
+  poll_seconds: 300
+  state_file: state/small_state.json
+  log_file: logs/small.log
