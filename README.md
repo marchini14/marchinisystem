@@ -44,6 +44,9 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Za postavljanje korak po korak — lokalno, na VPS-u preko systemd, ili u
+Dockeru — vidi **[deploy/SETUP.md](deploy/SETUP.md)**.
+
 ## Upotreba
 
 Za `screen` i `capital` **ne trebaju API kljucevi** — koriste javne podatke.
