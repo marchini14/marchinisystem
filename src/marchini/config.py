@@ -48,8 +48,14 @@ class RuntimeConfig:
     log_file: str = "logs/bot.log"
 
 
+MODES = ("paper", "demo", "live")
+
+
 @dataclass
 class Config:
+    # paper = lokalna simulacija, bez API kljuceva, bez naloga
+    # demo  = pravi potpisani nalozi na Bitget demo racun (virtualni novac)
+    # live  = pravi nalozi, pravi novac
     mode: str = "paper"
     equity: float = 100.0
     screener: ScreenerConfig = field(default_factory=ScreenerConfig)
@@ -57,10 +63,21 @@ class Config:
     risk: RiskConfig = field(default_factory=RiskConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
 
+    @property
+    def is_demo(self) -> bool:
+        return self.mode == "demo"
+
+    @property
+    def sends_orders(self) -> bool:
+        """demo i live oba salju potpisane naloge; samo paper ne salje nista."""
+        return self.mode in ("demo", "live")
+
     def validate(self) -> None:
         errors: list[str] = []
-        if self.mode not in ("paper", "live"):
-            errors.append(f"mode mora biti 'paper' ili 'live', ne '{self.mode}'")
+        if self.mode not in MODES:
+            errors.append(
+                f"mode mora biti jedan od {', '.join(MODES)} - ne '{self.mode}'"
+            )
         if self.equity <= 0:
             errors.append("equity mora biti > 0")
         if not 0 < self.risk.risk_per_trade_pct <= 100:

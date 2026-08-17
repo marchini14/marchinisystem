@@ -32,7 +32,7 @@ class Bot:
         self.history: list[dict] = []
         self.halted_reason: str | None = None
 
-        if cfg.mode == "live":
+        if cfg.sends_orders:
             self.broker: PaperBroker | LiveBroker = LiveBroker(client, cfg.risk.leverage)
         else:
             self.broker = PaperBroker(cfg.equity)

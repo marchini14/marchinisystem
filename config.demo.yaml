@@ -1,0 +1,47 @@
+# Config za Bitget DEMO trgovanje (virtualni novac, pravi API).
+#
+# Pokreni sa:  python -m marchini run -c config.demo.yaml
+#
+# Demo racun na Bitgetu ima samo 3 para (SBTCSUSDT, SETHSUSDT, SXRPSUSDT) i
+# oni su daleko manje volatilni od altcoina na pravom trzistu - izmjereni ATR
+# im je 0.34-0.51% na 1H, dok altcoini idu 3-11%. Zato su filteri ovdje
+# spusteni; sa default vrijednostima iz config.yaml demo screener ne bi vratio
+# nijedan par i bot nikad ne bi otvorio poziciju.
+mode: demo
+
+# U demo modu ovo se IGNORISE - kapital se cita sa demo racuna preko API-ja.
+# Ostaje samo da config bude validan.
+equity: 1000.0
+
+screener:
+  min_volume_24h: 1000000     # SXRPSUSDT ima ~1.7M; ostala dva stotine miliona
+  max_change_24h_pct: 25.0
+  min_atr_pct: 0.25           # izmjereno: SBTC 0.34%, SETH 0.40%, SXRP 0.51%
+  max_abs_funding: 0.0005
+  top_n: 3                    # toliko ih i postoji
+  blacklist: []
+
+strategy:
+  timeframe: 1H
+  donchian_lookback: 20
+  ema_trend: 50
+  atr_period: 14
+  atr_stop_mult: 2.0
+  atr_target_mult: 3.0
+  allow_short: true
+
+risk:
+  # Niski ATR znaci da je stop blizu ulaza, pa je likvidacija na 5x vrlo daleko
+  # od stopa - risk modul ovdje prolazi lako. Ne koristi to kao izgovor za
+  # visi leverage na pravom racunu, gdje je ATR 10x veci.
+  leverage: 5
+  risk_per_trade_pct: 1.0
+  max_open_positions: 2       # od 3 dostupna para
+  daily_loss_limit_pct: 5.0
+  max_fee_share_of_target_pct: 15.0
+  min_liq_distance_vs_stop: 1.5
+
+runtime:
+  poll_seconds: 300
+  state_file: state/demo_state.json   # odvojeno od paper/live state-a
+  log_file: logs/demo.log

@@ -6,8 +6,28 @@ Bot sam skenira sve parove, nalazi likvidne i volatilne, trazi mehanicki
 breakout signal, izracuna velicinu pozicije iz rizika i otvori trejd sa
 stop-lossom i take-profitom. Radi u petlji bez nadzora.
 
-**Default mod je `paper` — simulacija bez pravog novca.** Live trgovanje se
-ukljucuje eksplicitno u `config.yaml`.
+## Tri moda
+
+| Mod | Salje naloge | Kljucevi | Novac | Cemu sluzi |
+|---|---|---|---|---|
+| `paper` | ne | ne trebaju | nema | Test strategije lokalno (**default**) |
+| `demo` | da, na Bitget demo | trebaju (demo) | virtualni | Test cijelog puta do burze |
+| `live` | da, na pravi racun | trebaju | **pravi** | Pravo trgovanje |
+
+`demo` koristi Bitget demo trgovanje (`SUSDT-FUTURES`) — pravi API, pravi
+potpisani nalozi, virtualni novac. To je jedini nacin da se testira izvrsavanje
+naloga bez rizika. Ima samo 3 para (`SBTCSUSDT`, `SETHSUSDT`, `SXRPSUSDT`), pa
+za njega postoji poseban `config.demo.yaml` sa spustenim filterima — izmjereni
+ATR im je 0.34-0.51%, dok altcoini na pravom trzistu idu 3-11%, i sa default
+filterima demo screener ne bi vratio nista.
+
+```bash
+python -m marchini run -c config.demo.yaml
+```
+
+**Sandbox u kojem bot radi nije sandbox za burzu.** Ako je `mode: live`, nalozi
+idu na pravi Bitget racun i troše pravi novac — bez obzira odakle je proces
+pokrenut. Jedini sandbox koji Bitget priznaje je `mode: demo`.
 
 ---
 

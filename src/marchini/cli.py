@@ -21,14 +21,23 @@ from .risk import ContractSpec, size_trade
 log = logging.getLogger(__name__)
 
 
-def _client(cfg: Config) -> BitgetClient:
+def _client(cfg: Config, needs_orders: bool) -> BitgetClient:
+    """Napravi klijent; trazi kredencijale samo ako komanda moze poslati nalog.
+
+    `screen` i `capital` citaju samo javne rute, pa rade i bez kljuceva - i u
+    demo modu, gdje demo market data takodje nije zasticena.
+    """
     key, secret, passphrase = credentials()
-    if cfg.mode == "live" and not all((key, secret, passphrase)):
+    client = BitgetClient(key, secret, passphrase, demo=cfg.is_demo)
+    if needs_orders and cfg.sends_orders and not client.has_credentials:
+        # Sva tri su obavezna: sam API key ne moze potpisati nalog.
         sys.exit(
-            "mode je 'live' ali API kljucevi nisu u okolini.\n"
-            "Kopiraj .env.example u .env, popuni kljuceve, pa: set -a; . ./.env; set +a"
+            f"mode je '{cfg.mode}' ali fale kredencijali: "
+            f"{', '.join(client.missing_credentials())}\n"
+            "Kopiraj .env.example u .env, popuni sva tri polja, pa:\n"
+            "  set -a; . ./.env; set +a"
         )
-    return BitgetClient(key, secret, passphrase)
+    return client
 
 
 def _screen(cfg: Config, client: BitgetClient) -> list[screener.Candidate]:
@@ -139,7 +148,14 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = load_config(args.config)
     setup_logging(cfg.runtime.log_file, args.verbose)
-    client = _client(cfg)
+    read_only = args.command in ("screen", "capital")
+    client = _client(cfg, needs_orders=not read_only)
+
+    if cfg.sends_orders and not read_only:
+        log.warning(
+            "mode=%s - bot ce slati PRAVE naloge na Bitget (%s)",
+            cfg.mode, client.product_type,
+        )
 
     if args.command == "screen":
         cmd_screen(cfg, client)

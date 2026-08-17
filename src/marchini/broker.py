@@ -1,7 +1,9 @@
-"""Izvrsavanje naloga: paper (simulacija) i live (pravi nalozi na Bitget).
+"""Izvrsavanje naloga: paper (lokalna simulacija) i potpisani nalozi na Bitget.
 
 Oba brokera dijele isti interfejs, pa bot.py ne zna u kojem je modu. Paper je
-default jer se strategija testira bez novca; live se ukljucuje eksplicitno.
+default jer se strategija testira bez kljuceva; demo i live se ukljucuju
+eksplicitno. LiveBroker pokriva i demo i pravi racun - razlika je samo u
+productType klijenta, ne u logici naloga.
 """
 
 from __future__ import annotations
@@ -124,21 +126,23 @@ class PaperBroker:
 
 
 class LiveBroker:
-    """Pravi nalozi. SL/TP se salju uz ulazni nalog, pa ih burza drzi.
+    """Potpisani nalozi na Bitget - demo racun ili pravi, zavisno od klijenta.
 
-    Zato ovdje nema check_exits: izlaze vodi Bitget, a bot ih samo detektuje
-    tako sto pozicija nestane sa liste otvorenih pozicija.
+    SL/TP se salju uz ulazni nalog, pa ih burza drzi. Zato ovdje nema
+    check_exits: izlaze vodi Bitget, a bot ih samo detektuje tako sto pozicija
+    nestane sa liste otvorenih pozicija.
     """
-
-    mode = "live"
 
     def __init__(self, client: BitgetClient, leverage: int) -> None:
         if not client.has_credentials:
+            missing = ", ".join(client.missing_credentials())
             raise RuntimeError(
-                "live mode traži BITGET_API_KEY / _SECRET / _PASSPHRASE u okolini"
+                f"potpisani nalozi traze sva tri kredencijala u okolini; fale: {missing}"
             )
         self.client = client
         self.leverage = leverage
+        self.mode = "demo" if client.demo else "live"
+        self._tag = "DEMO" if client.demo else "LIVE"
         self._leverage_set: set[str] = set()
 
     @property
@@ -186,8 +190,8 @@ class LiveBroker:
             return None
 
         log.info(
-            "[LIVE] OPEN %s %s qty=%s @ ~%g stop=%g target=%g",
-            trade.side, trade.symbol, qty_str, trade.entry, trade.stop, trade.target,
+            "[%s] OPEN %s %s qty=%s @ ~%g stop=%g target=%g",
+            self._tag, trade.side, trade.symbol, qty_str, trade.entry, trade.stop, trade.target,
         )
         return Position(
             symbol=trade.symbol,
@@ -209,5 +213,5 @@ class LiveBroker:
         except BitgetError as exc:
             log.error("ne mogu zatvoriti %s: %s", symbol, exc)
             return None
-        log.info("[LIVE] CLOSE %s %s (%s)", pos.side, symbol, reason)
+        log.info("[%s] CLOSE %s %s (%s)", self._tag, pos.side, symbol, reason)
         return Fill(symbol, pos.side, pos.qty, price, reason)

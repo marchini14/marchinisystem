@@ -49,6 +49,34 @@ brze.
 
 ---
 
+## Varijanta A2 — demo mod (pravi nalozi, virtualni novac)
+
+Ovo je pravi sandbox. Testira cijeli put — potpis, nalog, SL/TP na burzi,
+pracenje pozicije — bez ikakvog rizika.
+
+1. Bitget → prebaci se na **Demo trading**
+2. Napravi API kljuc **unutar demo moda** (demo i pravi racun imaju odvojene
+   kljuceve; nisu zamjenjivi)
+3. Dozvole: `Futures Trading` + `Read`. **Nikad `Withdraw`.**
+
+```bash
+cp .env.example .env
+nano .env                  # popuni SVA TRI polja
+set -a; . ./.env; set +a
+
+python -m marchini run -c config.demo.yaml
+```
+
+Ako fali bilo koji od tri kredencijala, bot ti kaze tacno koji:
+
+```
+mode je 'demo' ali fale kredencijali: BITGET_API_SECRET, BITGET_API_PASSPHRASE
+```
+
+`screen` i `capital` rade i u demo modu **bez** kljuceva — citaju samo javne rute.
+
+---
+
 ## Varijanta B — VPS, 24/7 (za pravo trgovanje)
 
 Bot mora raditi neprekidno. Laptop koji se uspava propusti signale i, gore,
