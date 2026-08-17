@@ -64,8 +64,14 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Za postavljanje korak po korak — lokalno, na VPS-u preko systemd, ili u
-Dockeru — vidi **[deploy/SETUP.md](deploy/SETUP.md)**.
+Za postavljanje korak po korak:
+
+- **[deploy/SETUP.md](deploy/SETUP.md)** — lokalno, VPS preko systemd, Docker
+- **[deploy/NORTHFLANK.md](deploy/NORTHFLANK.md)** — Northflank 24/7, sa tajnama
+  u njihovom secret groupu (kljucevi ne prolaze kroz git ni chat)
+
+U kontejneru se config bira varijablom `MARCHINI_CONFIG` (npr.
+`config.small.yaml`), pa promjena moda ne trazi novi build.
 
 ## Upotreba
 
@@ -168,9 +174,10 @@ src/marchini/
 pip install pytest && python -m pytest -q
 ```
 
-66 testova pokrivaju risk matematiku, indikatore, signale, paper fill logiku,
-validaciju configa, demo/live routing i preflight provjere. Risk modul je
-testiran najgusce — to je dio koji cuva kapital.
+82 testa pokrivaju risk matematiku, indikatore, signale, paper fill logiku,
+validaciju configa, demo/live routing, preflight provjere, ogranicenja malog
+kapitala i izbor configa iz okoline. Risk modul je testiran najgusce — to je
+dio koji cuva kapital.
 
 ## Poznata ogranicenja
 

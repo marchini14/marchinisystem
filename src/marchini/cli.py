@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 from . import screener, strategy
@@ -234,7 +235,11 @@ def cmd_check(cfg: Config, client: BitgetClient) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="marchini", description=__doc__)
     parser.add_argument("command", choices=["screen", "capital", "check", "once", "run"])
-    parser.add_argument("-c", "--config", default="config.yaml")
+    # MARCHINI_CONFIG postoji za kontejnere: u Northflanku/Dockeru config se
+    # bira runtime varijablom, jer editovanje fajla u imageu znaci novi build.
+    parser.add_argument(
+        "-c", "--config", default=os.getenv("MARCHINI_CONFIG", "config.yaml")
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
