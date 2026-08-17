@@ -1,0 +1,41 @@
+# systemd unit za trajno pokretanje bota na Linux VPS-u.
+#
+# Instalacija:
+#   sudo cp deploy/marchini.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now marchini
+#
+# Logovi:  journalctl -u marchini -f
+# Stop:    sudo systemctl stop marchini
+
+[Unit]
+Description=marchinisystem - Bitget futures trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=marchini
+WorkingDirectory=/opt/marchinisystem
+
+# Kljucevi idu u fajl sa dozvolama 600, ne u ovaj unit - unit je citljiv svima.
+EnvironmentFile=/etc/marchini/env
+Environment=PYTHONPATH=/opt/marchinisystem/src
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/marchinisystem/.venv/bin/python -m marchini run
+
+# Restart je obavezan: ako bot padne sa otvorenom pozicijom, ta pozicija
+# ostaje na burzi. SL/TP je drzi, ali bot mora nazad da vodi evidenciju.
+Restart=always
+RestartSec=30
+
+# Osnovno ogranicavanje - botu ne treba pristup ostatku sistema.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/marchinisystem/state /opt/marchinisystem/logs
+
+[Install]
+WantedBy=multi-user.target
