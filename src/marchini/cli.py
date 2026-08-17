@@ -2,6 +2,7 @@
 
   screen    prikazi trenutne najbolje parove (bez trgovanja)
   capital   izracunaj koliko kapitala treba za trejd na tim parovima
+  check     preflight pred live/demo: kredencijali, racun, kapital (bez naloga)
   once      odradi jedan prolaz bota i izadji
   run       pokreni bota u petlji
 """
@@ -139,9 +140,100 @@ def cmd_capital(cfg: Config, client: BitgetClient) -> None:
     print()
 
 
+def cmd_check(cfg: Config, client: BitgetClient) -> None:
+    """Preflight za live/demo: provjeri sve sto treba PRIJE prvog naloga.
+
+    Ne salje nijedan nalog. Namjena je da prvi live start ne bude i prvi put
+    kad se otkrije da passphrase fali ili da je leverage iznad limita.
+    """
+    ok = True
+    print(f"\nmode={cfg.mode}  productType={client.product_type}  "
+          f"marginCoin={client.margin_coin}")
+    print("-" * 60)
+
+    missing = client.missing_credentials()
+    if missing:
+        print(f"[X] kredencijali        fale: {', '.join(missing)}")
+        if cfg.sends_orders:
+            print("\n    Bez sva tri nema potpisa i nijedan nalog ne moze proci.")
+            print("    Popuni .env pa: set -a; . ./.env; set +a")
+            sys.exit(1)
+        ok = False
+    else:
+        print("[OK] kredencijali       sva tri prisutna")
+
+    if not cfg.sends_orders:
+        print(f"\n[!] mode je '{cfg.mode}' - nalozi se NE salju na burzu.")
+        print("    Za prave naloge stavi mode: live u config.yaml")
+        return
+
+    # Potpisani poziv: ako ovo prodje, potpis i dozvole kljuca su ispravni.
+    try:
+        balance = client.available_balance()
+        print(f"[OK] potpisani poziv    racun cita, raspolozivo {balance:.2f} "
+              f"{client.margin_coin}")
+    except Exception as exc:
+        print(f"[X] potpisani poziv     {exc}")
+        print("\n    Najcesci uzroci: pogresan passphrase, kljuc bez Futures "
+              "Trading dozvole,\n    ili demo kljuc upotrijebljen za live (i obrnuto).")
+        sys.exit(1)
+
+    try:
+        positions = client.positions()
+        print(f"[OK] pozicije           {len(positions)} otvorenih na burzi")
+    except Exception as exc:
+        print(f"[X] pozicije            {exc}")
+        ok = False
+
+    specs = {r["symbol"]: ContractSpec.from_api(r) for r in client.contracts()}
+    print(f"[OK] kontrakti          {len(specs)} simbola")
+
+    # Da li kapital na racunu uopste moze proci risk provjere.
+    candidates = _screen(cfg, client)
+    print(f"[OK] screener           {len(candidates)} kandidata")
+    if not candidates:
+        print("\n[!] Nijedan par ne prolazi filtere - bot nece imati sta trgovati.")
+        return
+
+    tradeable = []
+    for c in candidates:
+        spec = specs.get(c.symbol)
+        if spec is None:
+            continue
+        trade = size_trade(
+            symbol=c.symbol, side="long", entry=c.price, atr_value=c.atr_value,
+            spec=spec, equity=balance, leverage=cfg.risk.leverage,
+            risk_per_trade_pct=cfg.risk.risk_per_trade_pct,
+            atr_stop_mult=cfg.strategy.atr_stop_mult,
+            atr_target_mult=cfg.strategy.atr_target_mult,
+            max_fee_share_of_target_pct=cfg.risk.max_fee_share_of_target_pct,
+            min_liq_distance_vs_stop=cfg.risk.min_liq_distance_vs_stop,
+        )
+        if trade.ok:
+            tradeable.append((c.symbol, trade))
+
+    print(f"[{'OK' if tradeable else 'X'}] kapital            "
+          f"{len(tradeable)}/{len(candidates)} parova prolazi risk provjere "
+          f"sa {balance:.2f} {client.margin_coin}")
+
+    if not tradeable:
+        print("\n    Kapital je premali za sve kandidate pri ovom leverageu.")
+        print("    Pokreni: python -m marchini capital   (koliko treba po paru)")
+        sys.exit(1)
+
+    print(f"\n    Prvi moguci trejd bi izgledao ovako:")
+    symbol, t = tradeable[0]
+    print(f"      {symbol} long qty={t.qty:g} @ {t.entry:g}")
+    print(f"      stop={t.stop:g}  target={t.target:g}  likvidacija={t.liq_price:g}")
+    print(f"      margina={t.margin:.2f}  rizik={t.risk_amount:.2f}  "
+          f"fee={t.round_trip_fee:.3f}")
+
+    print(f"\n{'[OK] spremno za run' if ok else '[!] provjeri upozorenja gore'}\n")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="marchini", description=__doc__)
-    parser.add_argument("command", choices=["screen", "capital", "once", "run"])
+    parser.add_argument("command", choices=["screen", "capital", "check", "once", "run"])
     parser.add_argument("-c", "--config", default="config.yaml")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -149,6 +241,8 @@ def main(argv: list[str] | None = None) -> None:
     cfg = load_config(args.config)
     setup_logging(cfg.runtime.log_file, args.verbose)
     read_only = args.command in ("screen", "capital")
+    # check je namjerno "needs_orders": treba da padne ako kredencijali fale,
+    # jer mu je cijela svrha da to otkrije prije prvog run-a.
     client = _client(cfg, needs_orders=not read_only)
 
     if cfg.sends_orders and not read_only:
@@ -161,6 +255,8 @@ def main(argv: list[str] | None = None) -> None:
         cmd_screen(cfg, client)
     elif args.command == "capital":
         cmd_capital(cfg, client)
+    elif args.command == "check":
+        cmd_check(cfg, client)
     else:
         bot = Bot(cfg, client)
         if args.command == "once":

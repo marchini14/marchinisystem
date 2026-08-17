@@ -138,7 +138,23 @@ risk:
   risk_per_trade_pct: 1.0
 ```
 
-### 6. Pokreni kao servis
+### 6. Preflight — OBAVEZNO prije prvog run-a
+
+```bash
+cd /opt/marchinisystem
+set -a; . /etc/marchini/env; set +a
+PYTHONPATH=src .venv/bin/python -m marchini check
+```
+
+Ne šalje nijedan nalog. Provjerava po redu: sva tri kredencijala, da potpisani
+poziv prolazi (tj. da su passphrase i dozvole ispravni), koliko je na računu,
+koliko parova prolazi risk provjere sa tim kapitalom, i kako bi izgledao prvi
+mogući trejd — sa stopom, targetom i likvidacijskom cijenom.
+
+Ako `check` padne, `run` bi pao na istom mjestu — samo možda nakon što je već
+poslao nalog. Riješi šta prijavi, pa nastavi.
+
+### 7. Pokreni kao servis
 
 ```bash
 sudo cp deploy/marchini.service /etc/systemd/system/

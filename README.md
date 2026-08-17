@@ -69,7 +69,8 @@ Dockeru — vidi **[deploy/SETUP.md](deploy/SETUP.md)**.
 
 ## Upotreba
 
-Za `screen` i `capital` **ne trebaju API kljucevi** — koriste javne podatke.
+Za `screen` i `capital` **ne trebaju API kljucevi** — koriste javne podatke,
+u paper, demo i live modu jednako.
 
 ```bash
 export PYTHONPATH=src
@@ -80,6 +81,9 @@ python -m marchini screen
 # Koliko kapitala treba za trejd na tim parovima
 python -m marchini capital
 
+# Preflight pred live/demo: kredencijali, racun, kapital - BEZ naloga
+python -m marchini check
+
 # Jedan prolaz bota (paper), pa izlaz
 python -m marchini once
 
@@ -89,14 +93,16 @@ python -m marchini run
 
 ### Live mod
 
-1. `cp .env.example .env` i popuni kljuceve sa Bitgeta (Futures trading
-   dozvola; **bez** withdraw dozvole — botu ne treba i to je jedina zastita
-   ako kljuc procuri).
+1. `cp .env.example .env` i popuni **sva tri** kljuca sa Bitgeta (Futures
+   trading dozvola; **bez** withdraw dozvole — botu ne treba i to je jedina
+   zastita ako kljuc procuri).
 2. `set -a; . ./.env; set +a`
 3. U `config.yaml` postavi `mode: live` i `equity` na kapital koji si
    spreman izgubiti.
+4. Pokreni preflight — ne salje nalog, ali otkrije sve sto bi palo:
 
 ```bash
+python -m marchini check   # OBAVEZNO prije prvog run-a
 python -m marchini run
 ```
 
@@ -153,7 +159,7 @@ src/marchini/
   risk.py         sizing i veto pravila
   broker.py       PaperBroker (simulacija) i LiveBroker (pravi nalozi)
   bot.py          glavna petlja, state, dnevni limit
-  cli.py          screen / capital / once / run
+  cli.py          screen / capital / check / once / run
 ```
 
 ## Testovi
@@ -162,9 +168,9 @@ src/marchini/
 pip install pytest && python -m pytest -q
 ```
 
-46 testova pokrivaju risk matematiku, indikatore, signale, paper fill logiku
-i validaciju configa. Risk modul je testiran najgusce — to je dio koji cuva
-kapital.
+66 testova pokrivaju risk matematiku, indikatore, signale, paper fill logiku,
+validaciju configa, demo/live routing i preflight provjere. Risk modul je
+testiran najgusce — to je dio koji cuva kapital.
 
 ## Poznata ogranicenja
 
